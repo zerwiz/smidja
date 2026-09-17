@@ -13,6 +13,6 @@ allowed-tools: read,write,bash,glob,grep
 The smithy forges and runs workers. Völundr is its master craftsman.
 
 - **Full reference:** `AGENTS.md` (in this folder) — the canonical smithy doc.
-- **Scripts:** `scripts/` · **Visualizer UI:** `apps/visualizer` (:8437).
+- **Scripts:** `scripts/` · **Visualizer UI:** `apps/smidja-factory/apps/visualizer` (the smidja repo clone; :8437).
 - **Install/ports/observer:** `.agents/skills/galdr-ymirsystem/assets/smidja.md`.
 - **Runtime:** `bin/smidja-bootstrap.sh`, the Session/Trace/Decisions/Stats gates.
