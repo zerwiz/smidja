@@ -1,6 +1,6 @@
 {
   "name": "@zerwiz/smidja-factory",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Sm\u00ed\u00f0ja \u2014 the smithy, the agent factory: the agent roster and its phases, the phase envelopes, the run trace, and the Visualizer UI on :8437.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/zerwiz/smidja",
