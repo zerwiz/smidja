@@ -13,7 +13,7 @@ result is inspected rather than assumed.
 ## Install
 
 ```bash
-npm install -g @zerwiz/smidja
+npm install -g @zerwiz/smidja-factory
 ```
 
 That installs the factory: the skill, the smithy's own skills, the templates, the
@@ -22,7 +22,7 @@ There is no CLI entry point yet — the visualizer is the door, and it runs on
 `bun`, which Ymir's install already provides:
 
 ```bash
-cd "$(npm root -g)/@zerwiz/smidja"
+cd "$(npm root -g)/@zerwiz/smidja-factory"
 bun --cwd apps/visualizer install
 bun --cwd apps/visualizer run build     # the UI (./dist), which the API serves
 bun --cwd apps/visualizer run server    # :8437
