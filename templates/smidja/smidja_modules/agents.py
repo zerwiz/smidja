@@ -13,13 +13,15 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Literal, Optional
 
 import yaml
 
-from . import agent_opencode, agent_pi, lm_local, permissions, prompts, stall_watch
+from . import (agent_opencode, agent_pi, context as context_telemetry, lm_local,
+               permissions, prompts, stall_watch)
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, PhaseParams, PiRequest,
                          smidjaConfig, UsageBreakdown)
@@ -143,10 +145,10 @@ def _expand_one(text: str) -> str:
 def _expand_env(value):
     """Expand `${VAR}` / `${VAR:-default}` in config strings from the environment.
 
-    Rosters stay environment-agnostic: write `model: ${SMIDJA_LOCAL_MODEL:-lmstudio/qwen3.5-9b}`
+    Rosters stay environment-agnostic: write `model: ${SMIDJA_LOCAL_MODEL:-}`
     and each machine's `.env` decides the backend without editing the roster.
 
-    Defaults may nest (`${SMIDJA_PLANNER_MODEL:-${SMIDJA_LOCAL_MODEL:-lmstudio/...}}`);
+    Defaults may nest (`${SMIDJA_PLANNER_MODEL:-${SMIDJA_LOCAL_MODEL:-}}`);
     expansion loops until no placeholder remains.
     """
     if isinstance(value, str):
@@ -164,8 +166,106 @@ def _expand_env(value):
     return value
 
 
+# ── the hoard road (Rule 07 / plan 56) ───────────────────────────────────────
+# The roster carries no concrete model: an empty `model:` is filled from the
+# operator's hoard (`config/agents.yaml`, per-host overlay), resolved by the ONE
+# resolver `bin/fleet/agents-config.sh`. Env wins (already expanded above); then the
+# hoard; then the roster refuses loudly. Two operators, two models, tree untouched.
+
+_HOARD_CACHE: dict[str, str] = {}
+
+
+def _repo_root() -> Optional[Path]:
+    """The tree that owns bin/fleet/agents-config.sh (found, never assumed)."""
+    for cand in Path(__file__).resolve().parents:
+        if (cand / "bin" / "agents-config.sh").is_file():
+            return cand
+    return None
+
+
+def _hoard_agents_yaml() -> Optional[Path]:
+    """The operator's private agents.yaml, resolved without hardcoding a path."""
+    env = os.environ.get("YMIR_AGENTS_YAML")
+    if env and Path(env).is_file():
+        return Path(env)
+    settings = os.environ.get("YMIR_SETTINGS_DIR")
+    if not settings:
+        ymir_home = os.environ.get("YMIR_HOME") or os.environ.get("YMIR_HOARD")
+        if ymir_home:
+            settings = str(Path(ymir_home) / "config")
+    if settings:
+        cand = Path(settings) / "agents.yaml"
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _hoard_cfg() -> dict:
+    """Parse the hoard agents.yaml once (with overlay left to the resolver)."""
+    if "_cfg" in _HOARD_CACHE:
+        return json.loads(_HOARD_CACHE["_cfg"])
+    p = _hoard_agents_yaml()
+    try:
+        cfg = (yaml.safe_load(p.read_text()) or {}) if p else {}
+    except Exception:
+        cfg = {}
+    _HOARD_CACHE["_cfg"] = json.dumps(cfg)
+    return cfg
+
+
+def _hoard_default_model() -> str:
+    """The hoard's default model, via the ONE resolver (`agents-config.sh default`).
+
+    Falls back to the raw `default_model:` only if the resolver cannot run.
+    """
+    if "default" in _HOARD_CACHE:
+        return _HOARD_CACHE["default"]
+    model = ""
+    root = _repo_root()
+    if root:
+        script = root / "bin" / "agents-config.sh"
+        try:
+            model = subprocess.check_output(
+                ["bash", str(script), "default"], text=True,
+                stderr=subprocess.DEVNULL, timeout=15).strip()
+        except Exception:
+            model = ""
+    if not model:
+        model = str(_hoard_cfg().get("default_model") or "")
+    _HOARD_CACHE["default"] = model
+    return model
+
+
+def _hoard_role_model(role: str) -> str:
+    """A per-role override from the hoard (`smidja_roles:`), else empty."""
+    roles = _hoard_cfg().get("smidja_roles") or {}
+    if isinstance(roles, dict):
+        v = roles.get(role)
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            return str(v.get("model") or "")
+    return ""
+
+
+def _fill_models_from_hoard(raw: dict) -> str:
+    """Fill empty roster models from the hoard (env already won during expansion)."""
+    default = _hoard_default_model()
+    targets = [raw.get("defaults") or {}] + list(raw.get("agents") or [])
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        if not target.get("model"):
+            role = str(target.get("name") or "")
+            target["model"] = _hoard_role_model(role) or default
+    return default
+
+
 def load_config(path: str = "smidja/smidja_smidja_config/smidja.config.yaml") -> smidjaConfig:
     raw = _expand_env(yaml.safe_load(Path(path).read_text()) or {})
+    # Fill empty models from the hoard BEFORE the defaults-merge below, so a
+    # roster entry with no model inherits the operator's choice, not a literal.
+    _fill_models_from_hoard(raw)
     defaults = raw.get("defaults", {}) or {}
     for agent in raw.get("agents", []) or []:
         for key in ("coding_agent", "model", "thinking", "color", "tools", "writes"):
@@ -195,6 +295,11 @@ def validate(cfg: smidjaConfig, required: list[str]) -> None:
         if agent.coding_agent not in ("pi", "opencode"):
             problems.append(f"agent {name!r}: coding_agent {agent.coding_agent!r} "
                             f"is not implemented (pi | opencode)")
+        elif not agent.model:
+            problems.append(
+                f"agent {name!r}: no model — set SMIDJA_LOCAL_MODEL (or "
+                f"SMIDJA_{name.upper()}_MODEL), or default_model in your hoard "
+                f"config/agents.yaml (resolve with bin/fleet/agents-config.sh)")
         elif agent.coding_agent == "pi":
             try:
                 agent_pi.resolve_model(agent.model)
@@ -251,14 +356,14 @@ def _execute(run, phase: Phase, call: AgentCall, agent, agent_dir) -> EnvelopeBa
                 "\n\n## LIVE ENGINEER GUIDANCE (must follow — highest priority)\n\n"
                 f"{steer_text}"
             )
-    # Kaia's startup notes (Pillar D admission) ride a separate file so they are
+    # Völundr's startup notes (Pillar D admission) ride a separate file so they are
     # clearly inherited context, not a live steer — injected the same standing way.
     kaia_file = run.session_dir / "kaia_notes.md"
     if kaia_file.exists():
         kaia_text = kaia_file.read_text().strip()
         if kaia_text:
             system_text += (
-                "\n\n## KAIA ADMISSION NOTES (orchestrator context for this task)\n\n"
+                "\n\n## VÖLUNDR ADMISSION NOTES (orchestrator context for this task)\n\n"
                 f"{kaia_text}\n\n"
             )
     prompts.save(agent_dir / "prompts", "system.md", system_text)
@@ -475,10 +580,30 @@ def _execute(run, phase: Phase, call: AgentCall, agent, agent_dir) -> EnvelopeBa
 
     _persist_envelope(run, phase, agent.name, call, envelope, attempt, valid=True)
     run.console.envelope_summary(envelope)
-    context = latest or result
+    reading = latest or result
+    # THE PHASE'S CONTEXT RECEIPT. Occupancy is what the last turn left in the
+    # window; the window comes from the door the rest of the house uses (never a
+    # table here). Recorded per phase, not per agent, because one agent can run
+    # several phases (build_1, revise_1) and only the phase knows which ceiling
+    # it ended against.
+    window, window_source = context_telemetry.window_for(
+        current_model, hint=reading.context_window)
+    last_usage = reading.last_usage or {}
+    receipt = context_telemetry.phase_context(
+        model=current_model,
+        thinking=agent.thinking,
+        used=reading.context_tokens,
+        window=window,
+        source=window_source,
+        input_tokens=last_usage.get("input") or 0,
+        cache_read=last_usage.get("cacheRead") or 0,
+        output=last_usage.get("output") or 0,
+        finish=reading.last_finish,
+    )
+    run.context_by_phase[phase.phase_id] = receipt
     run.tracer.agent_session_row(run.smidja_id, agent, session_id,
-                                 context_tokens=context.context_tokens,
-                                 context_window=context.context_window)
+                                 context_tokens=reading.context_tokens,
+                                 context_window=window)
     run.save_agent_map(agent.name, {"session_id": session_id, "model": agent.model,
                                     "coding_agent": agent.coding_agent})
     run.tracer.event(EventRecord(smidja_id=run.smidja_id, phase_id=phase.phase_id,
@@ -492,9 +617,11 @@ def _execute(run, phase: Phase, call: AgentCall, agent, agent_dir) -> EnvelopeBa
                                  tokens=spent.total_tokens,
                                  payload={"cost": spent.total_cost,
                                           "usage": spent.model_dump(),
-                                          "context_tokens": context.context_tokens,
-                                          "context_window": context.context_window}))
+                                          "context_tokens": reading.context_tokens,
+                                          "context_window": window,
+                                          "context": receipt}))
     run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost)
+    run.console.context_receipt(agent.name, receipt)
     if envelope.status != "success":
         raise RuntimeError(f"{agent.name} reported status={envelope.status!r}: {envelope.summary}")
     return envelope
@@ -549,7 +676,7 @@ def _infer_task_role(description: str) -> str:
 
 def _materialize_subagent_start(run, phase: Phase, parent_agent: str, event: dict) -> None:
     """Open a subagent lane the moment an orchestrator `task`/`subagent_create`
-    tool call STARTS, so the child is visible below Kaia while it runs.
+    tool call STARTS, so the child is visible below Völundr while it runs.
 
     Old behavior materialized only at `tool_execution_end` (terminal-only lane,
     and nothing at all if the child stalls). This additive step writes the
@@ -772,7 +899,7 @@ def _event_forwarder(run, phase: Phase, agent_name: str):
         if event.get("type") == "tool_execution_start" and (
                 event.get("toolName") in ("task", "subagent_create")):
             # G2 live lanes: open the subagent lane the moment the dispatch
-            # starts (status=running), so the child is visible below Kaia while
+            # starts (status=running), so the child is visible below Völundr while
             # it runs instead of only appearing at tool_execution_end. The
             # terminal path below completes the SAME lane idempotently.
             _materialize_subagent_start(run, phase, agent_name, event)
