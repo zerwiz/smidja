@@ -13,7 +13,7 @@
  */
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   AgentSession,
   AgentStartPayload,
@@ -32,7 +32,7 @@ import type {
   StatsResponse,
 } from "../shared/types.ts";
 
-const DEFAULT_DB_RELATIVE = "smidja/smidja_data/smidja.db";
+export const DEFAULT_DB_RELATIVE = "apps/smidja/smidja_data/smidja.db";
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 500;
 
@@ -141,7 +141,7 @@ export function classifyFailure(phase: string, error: string | null): string {
 }
 
 /**
- * Resolve the db path: --db arg wins, then CMD_DB, then <cwd>/smidja/smidja_data/smidja.db.
+ * Resolve the db path: --db arg wins, then CMD_DB, then <cwd>/apps/smidja/smidja_data/smidja.db.
  * The db lives in the TARGET repo, so cwd is the repo the visualizer is pointed at.
  */
 export function resolveDbPath(argv: string[] = Bun.argv): string {
@@ -156,19 +156,36 @@ export function resolveDbPath(argv: string[] = Bun.argv): string {
   return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
 }
 
+/**
+ * The target repo's root, found by walking up from the db to a marker the repo
+ * always carries (`.agents/`, else `.git/`). Counting dirnames was brittle: the
+ * smithy moved from `<repo>/smidja/` to `<repo>/apps/smidja/`, and a fixed count
+ * would have to change in every module that derived anything from it.
+ */
+export function repoRootOf(dbPath: string): string {
+  let dir = dirname(dbPath);
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, ".agents")) || existsSync(join(dir, ".git"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return resolve(dirname(dirname(dirname(dbPath))));   // legacy fallback
+}
+
 export class smidjaDb {
   readonly path: string;
   /**
    * Where the smidja session dirs live: `{data_dir}/sessions/{smidja_id}/{agent}/`.
    * The db sits in the same data_dir (config's `observability.db` defaults to
-   * `smidja/smidja_data/smidja.db`), so deriving it as a sibling of the db file keeps
+   * `apps/smidja/smidja_data/smidja.db`), so deriving it as a sibling of the db file keeps
    * working when the whole data_dir is relocated.
    */
   readonly sessionsDir: string;
   readonly journalMode: string;
   private readonly db: Database;
   /** Opened on first archive and kept; null until then. */
-  /// ghost: Kaia auto-admission one-shots (smidja_prompt 'What Kaia already
+  /// ghost: Völundr auto-admission one-shots (smidja_prompt 'What Völundr already
   /// remembers…' / 'You are admitting smidja session…') are plumbing, already
   /// recorded inside the parent run as handoff/admitted events. Hide them from
   /// the session list unless CMD_SHOW_ADMISSIONS=1.
@@ -181,7 +198,10 @@ export class smidjaDb {
     return (
       " AND NOT COALESCE(" +
       nameCond +
-      " (request LIKE 'What Kaia already remembers%' OR request LIKE 'You are admitting smidja session%'), 0)"
+      // The admission one-shot's own request text, in both spellings: rows written
+      // before 2026-11-14 say "Kaia", and they are history that must still be hidden.
+      " (request LIKE 'What Völundr already remembers%' OR request LIKE 'What Kaia already remembers%'" +
+      " OR request LIKE 'You are admitting smidja session%'), 0)"
     );
   }
   private writer: Database | null = null;
@@ -715,7 +735,7 @@ export class smidjaDb {
     // Return an empty list instead of crashing on "no such table: sessions".
     if (!this.hasTable("sessions")) return [];
     // includeAll restores the old list behavior: every run (archived ones and
-    // Kaia's plumbing one-shots) is listed, so the chat sidebar's "Past
+    // Völundr's plumbing one-shots) is listed, so the chat sidebar's "Past
     // sessions" shows everything. Additive — the default stays the current
     // cleaned list.
     const filters: string[] = [];

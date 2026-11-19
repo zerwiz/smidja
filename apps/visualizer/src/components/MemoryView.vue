@@ -108,18 +108,18 @@ function tagClass(tag: string): string {
 
     <!-- header + stats -->
     <div class="head">
-      <div class="title">Kaia's memory <span class="dim">(engram)</span></div>
+      <div class="title">Völundr's memory <span class="dim">(engram)</span></div>
       <div v-if="health.ok" class="stat-row">
         <span class="stat">
-          <b>{{ inspect?.counts.episodes ?? health.episodes ?? '—' }}</b>
+          <b>{{ inspect?.counts?.episodes ?? health.episodes ?? '—' }}</b>
           episodes
         </span>
         <span class="stat">
-          <b>{{ inspect?.counts.facts ?? health.facts ?? '—' }}</b>
+          <b>{{ inspect?.counts?.facts ?? health.facts ?? '—' }}</b>
           facts
         </span>
         <span class="stat">
-          <b>{{ inspect?.counts.entities ?? health.entities ?? '—' }}</b>
+          <b>{{ inspect?.counts?.entities ?? health.entities ?? '—' }}</b>
           entities
         </span>
         <span v-if="inspect?.db" class="dim db">db: {{ inspect.db }}</span>
@@ -127,7 +127,7 @@ function tagClass(tag: string): string {
     </div>
 
     <div v-if="!health.ok && !apiError" class="empty-state">
-      memory bridge offline — start it with <code>bin/mimir-bridge.sh --start</code>
+      memory bridge offline — start it with <code>bin/bridge/mimir-bridge.sh --start</code>
       (the Well, :4602) or <code>scripts/start.sh</code>
     </div>
 
@@ -275,7 +275,7 @@ function tagClass(tag: string): string {
 }
 
 .panel {
-  background: rgba(16, 21, 32, 0.6);
+  background: rgba(26, 22, 16, 0.6);
   border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: 12px;
   padding: 14px 16px;
@@ -291,7 +291,7 @@ function tagClass(tag: string): string {
   flex-wrap: wrap;
 }
 .input {
-  background: rgba(11, 15, 24, 0.8);
+  background: rgba(21, 18, 9, 0.8);
   border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
   border-radius: 8px;
   color: inherit;

@@ -7,7 +7,7 @@ argument-hint: "[install | create smithy | run smithy | update config | ...]"
 # Smíðja — the Smithy
 
 > **Norse name:** **Smíðja** (the smithy). Its orchestrator seat is **Völundr**,
-> the master smith — Smíðja's orchestrator (Kaia's seat inside the smithy).
+> the master of the smiths — Smíðja's orchestrator, who leads the smithy and dispatches its smiths.
 > Registry: `.agents/assets/agents/naming.md`, `docs/lore.md` §XI.
 
 Reusable combination of **agents plus code**: deterministic Python smidja scripts own sequencing, retries, and acceptance; coding agents (Pi in v1) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
@@ -28,11 +28,11 @@ or starting agents, load the sibling instead:
 
 - **Coding agents:** `pi` for local/LM Studio rosters (default config:
   `coding_agent: pi`), `opencode` (via the `ocrd` profile) for cloud rosters.
-- **Default model:** `lmstudio/qwen3.5-9b` (from `smidja.config.yaml`:
-  `${SMIDJA_LOCAL_MODEL:-lmstudio/qwen3.5-9b}`). Full model surface: local
-  qwen3.5-4b/9b, gemma-4-12b-it, qwen3.6-35b-a3b quants, frontend-design-expert-8b;
-  cloud deepseek-v4-flash / big-pickle / nemotron-3-ultra-free — see
-  `smidja/smidja_smidja_config/roster.yaml` (the `tiers:` block).
+- **Default model:** resolved from the hoard (`config/agents.yaml`); the shipped
+  roster carries an empty placeholder (`${SMIDJA_LOCAL_MODEL:-}`) and refuses
+  loudly when no model is set. Full model surface: local
+  qwen quants and other GGUFs the operator's rail serves; cloud through the
+  chosen harness — see `smidja/smidja_smidja_config/roster.yaml` (the `tiers:` block).
 - **Rosters/teams:** `smidja/smidja_smidja_config/roster.yaml` — the ONE file (stacks,
   roles, tools, writes + the `tiers:` model catalog). `smidja rosters` lists/validates.
   - **Scaffold commands** (safe writes to that one file): `smidja team list|show|
@@ -46,11 +46,30 @@ or starting agents, load the sibling instead:
     override surface.
 - **`justfile` (repo root):** the starter recipes — `just scout/sdlc/
   simple-sdlc/orchestrate` run chains, `just sessions/phases/tail/procs/obs`
-  watch and open the UI. It calls `smidja-resolve-config`, honoring
+  watch and open the UI, `just resume <smidja_id> [--from-phase <name>]` continues a run at
+  its last green phase, `just record <smidja_id>` prints the run as one record, and
+  `just decide <smidja_id> <phase> approve|decline` settles an approval phase. It calls
+  `smidja-resolve-config`, honoring
   `SMIDJA_CONFIG` → `SMIDJA_ROSTER` → `SMIDJA_MODEL_TIER` → default `smidja.config.yaml`.
+- **Resume:** `smidja resume <run-id> [--from-phase <name>]` re-enters a run at the phase
+  after its last green-and-gate-passed phase, handing the committed envelopes, code
+  verdicts and agent session ids forward instead of buying them again
+  (`smidja_modules/resume.py`; the three refusals and the model-switch rule are in
+  `cookbooks/run_smidja.md` §Resume).
+- **The phase contract:** `PhaseParams(contract=...)` — `ordinary` (default), `approval`
+  (waits for a decision recorded in the trace; the block is never entered on silence,
+  the process exits 3 while waiting and 4 when declined) and `repeat` (one checkpoint
+  per iteration; `ph.iterations(n)` yields only the turns still owed). The contract is
+  in `smidja_modules/runner.py`; the wording is `cookbooks/run_smidja.md` §The phase
+  contract.
+- **The run record:** `smidja_modules/runrecord.py` is the ONE reader of the trace —
+  phases, steps, state and where the run stopped. `just record <id> [--json]` prints it,
+  `resume` plans from it, and a UI renders it, so three clients cannot disagree.
+  `docs`-level proof: `tests/test_recovery.py` SIGKILLs a live chain mid-phase and
+  asserts the restart re-enters at the checkpoint with no client attached.
 - **Visualizer ships with this skill:** `apps/visualizer/` (Vue + vite server).
   Start with `just ui` / `scripts/smidja ui` → UI `http://localhost:4601`, API
-  `:4600`, Kaia memory `#/memory`. Sqlite probing still works — the db is WAL.
+  `:4600`, Völundr memory `#/memory`. Sqlite probing still works — the db is WAL.
 - **Bench missions:** `tests/local-models/missions/` (T1 recon, T2 build, T3
   context probe) via `smidja mission T1|T2 [--config <roster>]`; results in
   `tests/local-models/RESULTS.md`.
@@ -58,7 +77,7 @@ or starting agents, load the sibling instead:
   (overview), `software-smidja-run.md` (how to run), `software-smidja-pi.md` /
   `software-smidja-opencode.md` (coding-agent setups), `software-smidja-visualizer.md`
   (trace UI), `SmidjaAgentsAndModels.md` (roster + model backends source of
-  truth, incl. reasoning/write-scope per agent), `wayoffactory-updates.md`.
+  truth, incl. reasoning/write-scope per agent), `example-7-updates.md`.
 
 ## Startup
 
@@ -122,6 +141,8 @@ Deep specs, when needed: [references/config.md](references/config.md) · [refere
 8. **A known command is code, not an agent** — if you can write the invocation down (`bun test`, `ruff check`), it belongs in a `kind="code"` phase via `smidja_modules/quality.py`. Agents are for the parts that need reading and deciding; failures come back to the builder as an envelope either way.
 9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `smidja_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
 10. **Every smidja ends in `run.finish()`** — phases passing is not the same as the run being accepted. A test phase that ran a red suite succeeded at its job. Pass `accepted=` so the exit code, the session status, and the banner are decided together and cannot disagree.
+11. **A phase's `contract` is a promise, not a label** — `approval` never runs its block without a decision recorded in the trace (`just decide`), and `repeat` commits one checkpoint per iteration so a restart repeats only the turns that never committed. No decision is not a yes, and silence never passes a gate.
+12. **The run is read as ONE record** — `smidja_modules/runrecord.py` is the only reader of the trace; `resume`, the `record` door and any UI take their phases, steps and state from it. A second private query is how two clients end up disagreeing about the same run.
 
 ## current scope (2026-09-01)
 
@@ -130,7 +151,7 @@ Written back after the loss audit (see
 `plans/getback-lost-functionality-plan.md`) so the doc carries an honest,
 reader-visible statement of what the runtime is and does today:
 
-- **Orchestration:** `smidja_orchestrate` — Kaia (orchestrator) dispatches real
+- **Orchestration:** `smidja_orchestrate` — Völundr (orchestrator) dispatches real
   sub-agents via the `task` tool on BOTH surfaces (opencode's native dispatch
   and pi's merged `subagents.ts` harness behave identically), tracks them, and
   reports every changed file. Lanes appear live the moment a dispatch starts
@@ -147,7 +168,7 @@ reader-visible statement of what the runtime is and does today:
 - **Stability:** a LM Studio GPU-kernel stall on a live pi child is detected by
   the watchdog (`stall_watch.py`), traced as `model_stall`, cleared by
   unload→reload, and the child is killed so the model-fallback retry resumes.
-- **Memory:** Kaia's engram under `smidja/smidja_data/kaia.engram` (UI `#/memory`,
+- **Memory:** Völundr's engram under `smidja/smidja_data/kaia.engram` (UI `#/memory`,
   CLI `just kaia`), project-aware per repo.
 - **Gates:** all 7 original gates preserved + `tools_were_used`, `loop_guard`,
   `orchestrator_dispatched`.
@@ -163,3 +184,7 @@ workhorse, `opencode/big-pickle` free, `opencode/nemotron-3-ultra-free`
 reasoning). `claude_code` is schema-valid but stubbed until v2. The visualizer
 ships in `apps/visualizer/` (see Current runtime above) — `just ui` / `smidja ui`
 starts it; sqlite probing also works while it runs.
+
+## CHANGE LOG
+
+- **2026-11-12** — this document gained a CHANGE LOG section so it carries its history (RULES/06). Its earlier history is its git log; entries are appended below, never rewritten.
