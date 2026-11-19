@@ -24,7 +24,7 @@ agents:
     coding_agent: pi
     model: google/gemini-3.6-flash        # ALWAYS provider/model-id
     thinking: high
-    color: "#a78bfa"
+    color: "#96a0a8"
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
       system: smidja/smidja_data/prompt_engineering/planner/system.md
@@ -66,7 +66,7 @@ agents:
 | `purpose` | yes | One sentence: what this agent is for. Should match its `system.md` Purpose. |
 | `prompt_engineering.system` | yes | Path to the system prompt — who the agent is, its single purpose, its output contract. |
 | `prompt_engineering.user` | yes | Path to the default user prompt — the task template with `{{prompt}}`, `{{previous_envelope}}`, `{{context_handoff_dir}}`. |
-| `color` | no | Hex swatch (`"#a78bfa"`) for this agent's lane in the visualizer. Travels config → `agent_sessions.color` → `/api/sessions/:smidja_id`, and rides the `agent_start` event so a lane is colored while the agent is still running. Unset = the UI's fallback palette. |
+| `color` | no | Hex swatch (`"#96a0a8"`) for this agent's lane in the visualizer. Travels config → `agent_sessions.color` → `/api/sessions/:smidja_id`, and rides the `agent_start` event so a lane is colored while the agent is still running. Unset = the UI's fallback palette. |
 | `coding_agent`, `model`, `thinking`, `color`, `harness_engineering` | no | Override the corresponding `defaults` key. |
 | `tools` | no | Allowlist. **Omitting the key means all tools usable.** A capability list, not a boundary — see `writes`. |
 | `writes` | no | What this agent may modify **in the repo**, enforced after every call. Omitted = unrestricted (still barred from `protected_files`). `[]` = no repo writes at all. A list = only those paths: a trailing `/` is a directory prefix, `*` matches within one path segment, `**` crosses segments, anything else is an exact path. Naming a `protected_files` path here is what unlocks it. **The session runtime under `data_dir` is always writable** — `writes: []` means read-only with respect to the repo, not unable to write its own report. |
@@ -200,3 +200,7 @@ Rule: **every entry in `harness_engineering` that registers a tool must have tha
 `harness_engineering` entries are pi extension **file paths**, passed through as `pi -e <path>`, one flag per entry, scoped to that agent only. This is where per-agent harness changes live — e.g. an output-tightening extension for an agent that keeps wrapping its envelope in prose. The starter roster ships with none. On Claude Code the field is reserved for MCP config and hooks in v2.
 
 **If the extension registers a tool, name that tool in the agent's `tools` list too** — `--tools` filters extension tools exactly like builtins, so an unnamed extension tool is silently unavailable no matter that the extension loaded fine. See [Extension tools must be named explicitly](#extension-tools-must-be-named-explicitly) above. Extensions that only shape output or add flags (no tool registration) need no `tools` change.
+
+## CHANGE LOG
+
+- **2026-11-12** — this document gained a CHANGE LOG section so it carries its history (RULES/06). Its earlier history is its git log; entries are appended below, never rewritten.

@@ -22,7 +22,7 @@ Thinking levels are Pi's reasoning effort: `off | minimal | low | medium | high 
 
 ```yaml
   - name: builder
-    color: "#22d3ee"      # hex; the starter roster ships violet/cyan/amber/green
+    color: "#c9973f"      # hex; the starter roster ships violet/cyan/amber/green
 ```
 
 Purely cosmetic and safe to change mid-project: the color rides the `agent_start` event and the `agent_sessions` row, so the visualizer picks it up on the next run without touching past sessions. Omit the key to let the UI's fallback palette choose.
@@ -101,3 +101,7 @@ Then name the agent in an smidja's `REQUIRED_AGENTS` and call it.
 - Output types never appear in config — they live at the call site, paired with the user prompt.
 
 Full spec: `references/config.md`.
+
+## CHANGE LOG
+
+- **2026-11-12** — this document gained a CHANGE LOG section so it carries its history (RULES/06). Its earlier history is its git log; entries are appended below, never rewritten.

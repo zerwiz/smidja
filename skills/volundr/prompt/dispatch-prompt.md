@@ -1,7 +1,7 @@
 # Völundr dispatch prompt template
 
 Used by `smidja/smidja_orchestrate.py` to hand the WHOLE task to the orchestrator
-with her memory of the project already injected. Fill the three variables,
+with his memory of the project already injected. Fill the three variables,
 then give it to Völundr (as the system prompt + this dispatch):
 
 ```text
@@ -15,7 +15,7 @@ WHAT YOU REMEMBER ABOUT THIS PROJECT:
 
 - `{{objective}}` — the original ask, verbatim. Never summarize it.
 - `{{project}}` — `Path(run.repo_root).name` (the repo basename).
-- `{{memory}}` — the `kaia_memory_for(project, k=5)` recall: top hits' contents
+- `{{memory}}` — the `volundr_memory_for(project, k=5)` recall: top hits' contents
   joined as `- <content>` bullets; or `(no prior memory yet — first run)` when
   the recall is empty / bridge is down.
 
@@ -48,9 +48,9 @@ the pydantic contract in `smidja/smidja_modules/data_types.py`:
 Rules the gates enforce (`orchestrator_dispatched`, `diff_matches_claims`):
 
 - `used_subagent_tools` **must be `true`** — Völundr must have actually called
-  `subagent_create` / `subagent_continue`. Never claim dispatch she did not do.
+  `subagent_create` / `subagent_continue`. Never claim dispatch he did not do.
 - `subagents` **must be non-empty** — name each sub-agent (`file`) and its
-  outcome (`note`). This is the traceable proof she coordinated.
+  outcome (`note`). This is the traceable proof he coordinated.
 - `changed_files` lists ONLY files a sub-agent actually wrote AND that exist on
   disk at report time. Völundr never writes code files herself.
 - `status: "fail"` is legal — the reviewer getst it and Völundr revises; the gate
@@ -89,3 +89,7 @@ opencode-agent-only (`ocrd` profile) — they run when the smidja runs under
 `thinking` is REQUIRED on every dispatch: `low` simple tasks · `medium` routine ·
 `high` complex multi-step · `xhigh` hardest/accuracy-critical. **Omit `model`
 to inherit the parent model**; pass it explicitly to build a mixed chain.
+
+## CHANGE LOG
+
+- **2026-11-12** — this document gained a CHANGE LOG section so it carries its history (RULES/06). Its earlier history is its git log; entries are appended below, never rewritten.
