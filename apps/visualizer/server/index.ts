@@ -7,28 +7,39 @@
  * agents → sqlite → web ui, and the UI gets there by polling.
  *
  *   bun run server/index.ts
- *   bun run server/index.ts --db /path/to/repo/smidja/smidja_data/smidja.db
+ *   bun run server/index.ts --db /path/to/repo/apps/smidja/smidja_data/smidja.db
  *   CMD_DB=/path/to/smidja.db PORT=8437 bun run server/index.ts
  */
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { smidjaDb, resolveDbPath } from "./db.ts";
+import { smidjaDb, resolveDbPath, repoRootOf } from "./db.ts";
 import type { AgentPrompts, ApiError, HealthResponse } from "../shared/types.ts";
 import * as rosterApi from "./roster-api.ts";
 import * as chat from "./chat.ts";
 import * as settingsApi from "./settings.ts";
 import { isPiResolvable, piModels } from "./model-catalog.ts";
+import { adaptMemoryPayload } from "./memory-adapt.ts";
 
 const PORT = Number(process.env.PORT ?? 8437);
+/**
+ * WHERE THIS DOOR ANSWERS — always loopback.
+ *
+ * It used to read `HOST` from the environment, so a stray `HOST=0.0.0.0` (in a
+ * shell, a unit, a docker env) opened the smithy's API to the whole network. The
+ * halls are local: they are opened from their own desktop icons, the session is
+ * the authority, and nothing fronts them (plan 275 item 30, plan 279). A door that
+ * an environment variable can widen is not a ward, so it is pinned here on
+ * purpose and not configurable.
+ */
+const HOST = "127.0.0.1";
 const DIST_DIR = resolve(import.meta.dir, "..", "dist");
 
-/** Kaia's engram memory bridge (Python, see scripts/kaia-memory-bridge.py). */
-const MEMORY_BRIDGE = process.env.KAIA_MEMORY_URL ?? "http://127.0.0.1:4602";
+/** Völundr's engram memory bridge (Python, see scripts/kaia-memory-bridge.py). */
+const MEMORY_BRIDGE = process.env.VOLUNDR_MEMORY_URL ?? process.env.KAIA_MEMORY_URL ?? "http://127.0.0.1:4602";
 
 const dbPath = resolveDbPath();
 
-/** <repoRoot>/smidja/smidja_data/smidja.db — three dirnames up is the repo root. */
-const repoRoot = resolve(dirname(dirname(dirname(dbPath))));
+const repoRoot = repoRootOf(dbPath);
 let db: smidjaDb;
 try {
   db = new smidjaDb(dbPath);
@@ -90,7 +101,7 @@ function intQuery(req: Request, key: string, fallback: number): number {
 }
 
 /**
- * Proxy one Kaia memory request to the engram bridge, collapsing the result
+ * Proxy one Völundr memory request to the engram bridge, collapsing the result
  * into our JSON envelope. A bridge that is down is reported as 503 rather than
  * a crash, so the UI can show "memory offline" instead of a dead page.
  */
@@ -103,17 +114,17 @@ async function memoryProxy(req: Request, path: string): Promise<Response> {
     body: req.method === "POST" ? await req.text() : undefined,
   });
   const raw = await upstream.text();
-  // Normalize health: the bridge reports `status: "up"`, but the UI checks
-  // `ok` — set it so a healthy bridge is never shown as offline.
+  // One translation, at the boundary (server/memory-adapt.ts). The bridge is flat; the
+  // UI contract is nested; nothing translated, and the Memory page rendered blank.
   let body = raw;
-  if (path === "/health") {
-    try {
-      const d = JSON.parse(raw);
-      if (d && typeof d === "object" && d.ok === undefined) d.ok = d.status === "up";
-      body = JSON.stringify(d);
-    } catch {
-      /* leave raw */
+  try {
+    const parsed = JSON.parse(raw);
+    body = JSON.stringify(adaptMemoryPayload(path, parsed));
+    if (path === "/health" && (!parsed || typeof parsed !== "object")) {
+      body = JSON.stringify({ ok: false, db: null, error: "unexpected bridge payload" });
     }
+  } catch {
+    /* a non-JSON body is passed through untouched */
   }
   return new Response(body, {
     status: upstream.status,
@@ -154,6 +165,7 @@ async function serveStatic(req: Request): Promise<Response> {
 
 const server = Bun.serve({
   port: PORT,
+  hostname: HOST,
   routes: {
     "/api/health": safely(
       (req) =>
@@ -167,20 +179,8 @@ const server = Bun.serve({
         } satisfies HealthResponse),
     ),
 
-      // The shared login, verified LIVE: forward the browser's cookie to the one
-      // authority (the gate). No token is read from disk — a file that claims a
-      // session is exactly "logged in when you are not".
-      "/api/auth": safely(async (req) => {
-        const gate = process.env.YMIR_GATE_URL ?? "http://127.0.0.1:3889";
-        const cookie = req.headers.get("cookie") ?? "";
-        try {
-          const r = await fetch(`${gate}/api/session`, { headers: cookie ? { cookie } : {} });
-          const s = (await r.json()) as { authed?: boolean; login?: string | null };
-          return json({ authed: !!s.authed, login: s.login ?? null });
-        } catch {
-          return json({ authed: false, login: null });
-        }
-      }),
+      // There is no login route: the smithy is local, the desktop session is the
+      // authority, and the gate's cookie is nothing to it (plan 275 item 30).
 
       // A speed-start from the UI: the same launcher the key bindings use. The
       // repo root is found by walking up to the checkout holding
@@ -223,7 +223,7 @@ const server = Bun.serve({
       db.reconcileStaleRunning();
       // DEFAULT = all-inclusive (the OLD behavior: every run listed). The
       // additive ?scope=cleaned escapes to the current cleaned list
-      // (archived + Kaia plumbing one-shots hidden). Nothing old is lost.
+      // (archived + Völundr plumbing one-shots hidden). Nothing old is lost.
       const scope = new URL(req.url).searchParams.get("scope");
       const includeAll = scope !== "cleaned";
       return json(db.sessions(intQuery(req, "limit", 200), includeAll));
@@ -537,6 +537,12 @@ const server = Bun.serve({
     "/api/chat/sessions": safely(async () => json(await chat.listSessions(dbPath))),
     "/api/chat/debug/sessions": safely(async () => json(await chat.debugSessions(dbPath))),
     "/api/chat/models": safely(async () => json(await chat.piModels(repoRoot))),
+    // The model the chat starts on: the operator's own choice from the home
+    // (config/smidja.env), else the repo's generic default. The picker reads this
+    // so the configured model is the one shown as selected.
+    "/api/chat/default-model": safely(async () =>
+      json({ model: chat.chatModelDefault(repoRoot) }),
+    ),
     "/api/chat/message": {
       POST: safely(async (req) => {
         const body = (await req.json().catch(() => ({}))) as {
@@ -586,33 +592,33 @@ const server = Bun.serve({
       }),
     },
 
-    // ── Kaia's memory (engram) — proxied to the Python bridge ──────────────
+    // ── Völundr's memory (engram) — proxied to the Python bridge ──────────────
     "/api/memory/health": safely(async (req) => {
       try {
         return await memoryProxy(req, "/health");
       } catch {
-        return json({ ok: false, db: null, error: "kaia memory bridge unreachable" }, 503);
+        return json({ ok: false, db: null, error: "Völundr's memory bridge unreachable" }, 503);
       }
     }),
     "/api/memory/inspect": safely(async (req) => {
       try {
         return await memoryProxy(req, "/inspect");
       } catch {
-        return json({ error: "kaia memory bridge unreachable" } satisfies ApiError, 503);
+        return json({ error: "Völundr's memory bridge unreachable" } satisfies ApiError, 503);
       }
     }),
     "/api/memory/recall": safely(async (req) => {
       try {
         return await memoryProxy(req, "/recall");
       } catch {
-        return json({ error: "kaia memory bridge unreachable" } satisfies ApiError, 503);
+        return json({ error: "Völundr's memory bridge unreachable" } satisfies ApiError, 503);
       }
     }),
     "/api/memory/timeline": safely(async (req) => {
       try {
         return await memoryProxy(req, "/timeline");
       } catch {
-        return json({ error: "kaia memory bridge unreachable" } satisfies ApiError, 503);
+        return json({ error: "Völundr's memory bridge unreachable" } satisfies ApiError, 503);
       }
     }),
     "/api/memory/observe": {
@@ -620,7 +626,7 @@ const server = Bun.serve({
         try {
           return await memoryProxy(req, "/observe");
         } catch {
-          return json({ error: "kaia memory bridge unreachable" } satisfies ApiError, 503);
+          return json({ error: "Völundr's memory bridge unreachable" } satisfies ApiError, 503);
         }
       }),
     },
