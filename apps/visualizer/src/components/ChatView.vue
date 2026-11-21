@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { askConfirm } from '../lib/confirm'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { navigate } from '../lib/router'
 import {
@@ -54,7 +55,13 @@ async function onNew() {
 }
 
 async function onDelete(id: string) {
-  if (!confirm(`Delete conversation "${id}"? This cannot be undone.`)) return
+  const ok = await askConfirm({
+    title: 'Delete conversation',
+    message: `Delete "${id}"? This cannot be undone.`,
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   await deleteChat(id)
 }
 
