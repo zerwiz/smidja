@@ -251,13 +251,16 @@ def _hoard_role_model(role: str) -> str:
 def _fill_models_from_hoard(raw: dict) -> str:
     """Fill empty roster models from the hoard (env already won during expansion)."""
     default = _hoard_default_model()
+    # An agent with no model of its own inherits `defaults.model` — which carries the env's
+    # choice (SMIDJA_LOCAL_MODEL) — before the hoard's default gets a say: env wins.
+    inherited = str((raw.get("defaults") or {}).get("model") or "")
     targets = [raw.get("defaults") or {}] + list(raw.get("agents") or [])
     for target in targets:
         if not isinstance(target, dict):
             continue
         if not target.get("model"):
             role = str(target.get("name") or "")
-            target["model"] = _hoard_role_model(role) or default
+            target["model"] = inherited or _hoard_role_model(role) or default
     return default
 
 
