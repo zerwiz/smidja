@@ -7,6 +7,13 @@ allowed-tools: read, write, edit, bash, grep, glob
 
 # Create New Teams — ask first, then make the team real
 
+> **Where a team lives (2026-11-21).** Write the team into the operator's home,
+> `$YMIR_HOME/config/smidja/teams.yaml` (`SMIDJA_TEAMS` overrides), under `stacks:` —
+> `agents: {role: model}`, where a model may be a list tried in order. The home travels to
+> every machine by git; a release's config does not survive an update. The runner merges
+> the home's teams over the config's, picks the first model THIS machine serves per agent,
+> and refuses a team whose agent has none. Prove it with `smidja team smoke <name>`.
+
 ## Sibling skills
 - **`create-new-agent`** — a single new agent role (do this first if the team
   needs a role that doesn't exist yet).

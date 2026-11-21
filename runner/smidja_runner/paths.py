@@ -90,6 +90,19 @@ def config_path(engine: Path | None) -> Path | None:
     return engine / "smidja_smidja_config" / "smidja.config.yaml"
 
 
+def teams_path() -> Path:
+    """The operator's teams, shared by every machine: the home travels by git, a release
+    does not (an update replaces the engine's config). SMIDJA_TEAMS overrides."""
+    env = os.environ.get("SMIDJA_TEAMS")
+    if env:
+        return Path(env).expanduser()
+    home = os.environ.get("YMIR_HOME") or str(Path.home() / "Documents" / "ymirhome")
+    if Path(home).is_dir():
+        return Path(home) / "config" / "smidja" / "teams.yaml"
+    cfg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(cfg) / "smidja" / "teams.yaml"
+
+
 def db_path() -> tuple[Path, str]:
     for var in ("SMIDJA_DB", "CMD_DB"):
         if os.environ.get(var):
