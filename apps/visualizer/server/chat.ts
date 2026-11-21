@@ -360,6 +360,12 @@ export function volundrPersonaFile(root: string): string | null {
     const abs = join(root, rel);
     if (existsSync(abs)) return abs;
   }
+  // The app's own persona, beside this server (prompts/volundr.md). Found by the
+  // file's own place, so it holds in the split repo (apps/visualizer) and in the
+  // older monorepo layout alike — a chat with no persona answers as whatever seat
+  // it runs on, which is the fault this guards against.
+  const own = join(import.meta.dir, "..", "prompts", "volundr.md");
+  if (existsSync(own)) return own;
   const shipped = findUp(import.meta.dir, APP_PERSONA_PATH);
   if (shipped) return shipped;
   for (const rel of LEGACY_PERSONA_PATHS) {

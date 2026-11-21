@@ -222,7 +222,7 @@ describe("volundrPersonaFile — the chat answers as Völundr, never as the seat
     const empty = mkdtempSync(join(tmpdir(), "volundr-empty-"));
     withEnv(undefined, () => {
       const got = volundrPersonaFile(empty);
-      expect(got).toMatch(/apps\/smidja-factory\/apps\/visualizer\/prompts\/volundr\.md$/);
+      expect(got).toMatch(/visualizer\/prompts\/volundr\.md$/);
     });
   });
 });
