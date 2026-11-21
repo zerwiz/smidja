@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { askConfirm } from '../lib/confirm'
 import { onMounted, ref } from 'vue'
 import type { SettingInfo } from '../lib/types'
 
@@ -46,7 +47,12 @@ async function load() {
 
 async function save(key: string) {
   const value = (values.value[key] ?? '').trim()
-  if (!value && settings.value[key]?.set && !confirm(`Clear ${key}?`)) return
+  if (
+    !value &&
+    settings.value[key]?.set &&
+    !(await askConfirm({ title: 'Clear setting', message: `Clear ${key}?`, confirmLabel: 'Clear', danger: true }))
+  )
+    return
   saving.value = true
   error.value = null
   status.value = null

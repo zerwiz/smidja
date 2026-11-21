@@ -12,6 +12,7 @@ import DecisionsView from './components/DecisionsView.vue'
 import StatsView from './components/StatsView.vue'
 import ChatView from './components/ChatView.vue'
 import SettingsView from './components/SettingsView.vue'
+import ConfirmModal from './components/ConfirmModal.vue'
 
 const emberEl = ref<HTMLCanvasElement | null>(null)
 let stopEmbers: (() => void) | undefined
@@ -140,6 +141,7 @@ function winControl(action: 'minimize' | 'maximize' | 'close') {
       <SessionsList v-else-if="!route.adwId" />
       <SessionTrace v-else :key="route.adwId" :adw-id="route.adwId" :phase-id="route.phaseId" />
     </main>
+    <ConfirmModal />
   </div>
 </template>
 
