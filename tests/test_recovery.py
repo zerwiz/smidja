@@ -37,7 +37,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]              # apps/smidja-factory
 SHIPPED = HERE / "templates" / "smidja"
 CHAIN = HERE / "tests" / "fixtures" / "recovery_chain.py"
-DECIDE = HERE.parent / "smidja" / "smidja_decide.py"
+DECIDE = HERE / "engine" / "smidja_decide.py"
 sys.path.insert(0, str(SHIPPED))
 
 from smidja_modules import runrecord                                  # noqa: E402

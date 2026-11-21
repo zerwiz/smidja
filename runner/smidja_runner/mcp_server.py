@@ -41,11 +41,15 @@ TOOLS = {
                             "stack": {"type": "string", "description": "a team from the config"},
                             "model": {"type": "string", "description": "provider/model for every agent"},
                             "tier": {"type": "string"}, "project_dir": {"type": "string"},
+                            "runtime": {"type": "string", "enum": ["internal", "herdr"],
+                                        "description": "internal: agents run headless in the engine; herdr: each agent seated in a visible pane"},
                             "dry_run": {"type": "boolean"}}, ["ask"]),
                    lambda a: (["run"] + ([a["chain"]] if a.get("chain") else []) + [a["ask"]]
                               + sum(([f"--{k.replace('_', '-')}", str(a[k])] for k in
-                                     ("mode", "service", "stack", "model", "tier", "project_dir") if a.get(k)), [])
+                                     ("mode", "service", "stack", "model", "tier", "project_dir", "runtime") if a.get(k)), [])
                               + (["--dry-run"] if a.get("dry_run") else []))),
+    "smidja_status": ("One run in one answer: state, runtime, team, phase, link.", _schema(RUN_ID, ["smidja_id"]),
+                      lambda a: ["status", a["smidja_id"]]),
     "smidja_sessions": ("Recent runs: id, status, tokens.", _schema({"n": {"type": "integer"}}),
                         lambda a: ["sessions", str(a.get("n") or 10)]),
     "smidja_record": ("One run as phases · steps · state · where it stopped.", _schema(RUN_ID, ["smidja_id"]),
