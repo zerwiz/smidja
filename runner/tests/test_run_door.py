@@ -197,7 +197,10 @@ class TestModelInheritance(unittest.TestCase):
 
     def test_builder_inherits_the_env_model(self):
         sys.path.insert(0, str(FACTORY / "engine"))
-        from smidja_modules import agents
+        try:
+            from smidja_modules import agents
+        except ImportError as e:  # the runner suite runs on bare python; the engine needs its pip deps
+            self.skipTest(f"engine deps not installed: {e}")
         with tempfile.TemporaryDirectory() as d:
             saved = {k: os.environ.get(k) for k in ("SMIDJA_LOCAL_MODEL", "YMIR_HOME", "YMIR_HOARD",
                                                     "YMIR_AGENTS_YAML", "YMIR_SETTINGS_DIR")}
