@@ -10,12 +10,12 @@
  * Both are tested here at the boundary where they broke: the resolver, and the adapter.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { piCommand, piPath, resetPiPathCache } from "./model-catalog.ts";
 import { adaptMemoryPayload } from "./memory-adapt.ts";
-import { DEFAULT_CHAT_MODEL, failureReason, volundrPersonaFile, chatModelDefault } from "./chat.ts";
+import { DEFAULT_CHAT_MODEL, failureReason, volundrPersonaFile, chatModelDefault, smithyRoot, smithyBooks, volundrSystemFile } from "./chat.ts";
 
 describe("piPath — the binary is resolved, never assumed", () => {
   test("YMIR_PI_BIN wins when it points at a real executable", () => {
@@ -262,5 +262,27 @@ describe("chatModelDefault — the repo is agnostic, the operator's home names t
     mkdirSync(join(home, "config"), { recursive: true });
     writeFileSync(join(home, "config/smidja.env"), "SMIDJA_CHAT_MODEL=\n");
     withEnv(undefined, () => expect(chatModelDefault(home)).toBe(DEFAULT_CHAT_MODEL));
+  });
+});
+
+describe("Völundr runs the smithy (2026-11-21)", () => {
+  test("the smithy's own folder is found, with its cookbooks and skills", () => {
+    const root = smithyRoot();
+    expect(root).not.toBeNull();
+    const books = smithyBooks(root!);
+    const paths = books.map((b) => b.path);
+    expect(paths.some((p) => p.endsWith("cookbooks/run_smidja.md"))).toBe(true);
+    expect(paths.some((p) => p.endsWith("skills/create-new-teams/SKILL.md"))).toBe(true);
+    expect(books.every((b) => b.about.length > 0)).toBe(true);
+  });
+
+  test("his system file carries the persona and the book index, not the books whole", () => {
+    const persona = volundrPersonaFile(mkdtempSync(join(tmpdir(), "v-")));
+    const file = volundrSystemFile(persona);
+    const text = readFileSync(file!, "utf8");
+    expect(text).toContain("You are **Völundr**");
+    expect(text).toContain("smidja run --task");
+    expect(text).toContain("cookbooks/how_to_prompt_for_the_eng.md");
+    expect(text.length).toBeLessThan(30000);
   });
 });

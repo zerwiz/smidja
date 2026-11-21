@@ -12,7 +12,8 @@
  * This mirrors the existing server style: read-only against smidja.db, cautious
  * about spawning, and everything wrapped by `safely` in the caller.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { repoRootOf } from "./db.ts";
 import { piCommand } from "./model-catalog.ts";
@@ -383,9 +384,69 @@ export const kaiaPersonaFile = volundrPersonaFile;
  *  from adopting the identity of whatever AGENTS.md sits in its working directory. */
 function volundrPromptArgs(cwd: string): string[] {
   const persona = volundrPersonaFile(cwd);
-  const args: string[] = ["--no-context-files"];
-  if (persona) args.push("--append-system-prompt", persona);
+  // --no-extensions: Völundr is the smithy's own agent, not a seat. The machine's seat
+  // extensions (the arm, the session lock, the seat digest) are for the seat's primary;
+  // loaded here they made him "read-only, the arm is held elsewhere" and stopped him.
+  const args: string[] = ["--no-context-files", "--no-extensions"];
+  const file = volundrSystemFile(persona);
+  if (file) args.push("--append-system-prompt", file);
   return args;
+}
+
+/** The smithy's own folder (holds cookbooks/ and skills/), found from this server. */
+export function smithyRoot(): string | null {
+  return findUp(import.meta.dir, "cookbooks/run_smidja.md")?.replace(/\/cookbooks\/run_smidja\.md$/, "") ?? null;
+}
+
+/** One line per book: its path and what it is for (front-matter description or first heading). */
+export function smithyBooks(root: string): { path: string; about: string }[] {
+  const out: { path: string; about: string }[] = [];
+  const about = (file: string): string => {
+    const text = readFileSync(file, "utf8");
+    const d = /^description:\s*"?(.+?)"?\s*$/m.exec(text);
+    if (d) return d[1].slice(0, 300);
+    const h = /^#\s+(.+)$/m.exec(text);
+    return h ? h[1] : "";
+  };
+  const cb = join(root, "cookbooks");
+  if (existsSync(cb))
+    for (const f of readdirSync(cb).filter((f) => f.endsWith(".md")).sort())
+      out.push({ path: join(cb, f), about: about(join(cb, f)) });
+  const sk = join(root, "skills");
+  if (existsSync(sk))
+    for (const d of readdirSync(sk).sort()) {
+      const f = join(sk, d, "SKILL.md");
+      if (existsSync(f)) out.push({ path: f, about: about(f) });
+    }
+  return out;
+}
+
+/** The persona plus the smithy's books, as one file for pi's --append-system-prompt.
+ *  The books are LISTED (path + purpose), never pasted whole: Völundr reads the one a
+ *  task needs with his read tool, so a chat turn does not carry 150 KB of manuals. */
+export function volundrSystemFile(persona: string | null): string | null {
+  const parts: string[] = [];
+  if (persona) parts.push(readFileSync(persona, "utf8"));
+  const root = smithyRoot();
+  if (root) {
+    const books = smithyBooks(root);
+    parts.push(
+      [
+        "## Your books (read the one a task needs before you act)",
+        "",
+        `The smithy lives at \`${root}\`. Before launching any run, read \`cookbooks/run_smidja.md\` and ` +
+          "`cookbooks/how_to_prompt_for_the_eng.md` with your read tool. For teams read " +
+          "`skills/create-new-teams/SKILL.md` and `skills/how-to-run-agent-teams/SKILL.md`; for models " +
+          "`skills/add-or-edit-ai-models/SKILL.md`.",
+        "",
+        ...books.map((b) => `- \`${b.path}\` — ${b.about}`),
+      ].join("\n"),
+    );
+  }
+  if (!parts.length) return null;
+  const file = join(tmpdir(), `volundr-system-${process.pid}.md`);
+  writeFileSync(file, parts.join("\n\n"));
+  return file;
 }
 
 /**
