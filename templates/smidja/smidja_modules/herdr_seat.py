@@ -138,10 +138,14 @@ class Seat:
         # tails and prints a readable view for the person watching.
         tee = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).with_name('herdr_tee.py')))} {shlex.quote(str(raw_path))}"
         exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items() if k.startswith(("SMIDJA_", "PI_")))
-        line = (f"cd {shlex.quote(cwd)} && printf '\\n== {title} ==\\n' && "
-                f"{{ {exports} {shlex.join(argv)} 2> >(tee {shlex.quote(str(self.err_path))} >&2) | {tee}; "
-                f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(self.rc_path))}; }}")
-        _herdr("pane", "run", self.pane, f"bash -c {shlex.quote(line)}")
+        script = raw_path.with_suffix(raw_path.suffix + ".seat.sh")
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            f"cd {shlex.quote(cwd)} || exit 1\n"
+            f"printf '\\n== %s ==\\n' {shlex.quote(title)}\n"
+            f"{exports} {shlex.join(argv)} 2> >(tee {shlex.quote(str(self.err_path))} >&2) | {tee}\n"
+            f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(self.rc_path))}\n")
+        _herdr("pane", "run", self.pane, f"clear; bash {shlex.quote(str(script))}")
 
     def pid(self) -> int:
         try:
