@@ -98,7 +98,7 @@ def teams_path() -> Path:
         return Path(env).expanduser()
     home = os.environ.get("YMIR_HOME") or str(Path.home() / "Documents" / "ymirhome")
     if Path(home).is_dir():
-        return Path(home) / "config" / "smidja" / "teams.yaml"
+        return Path(home) / "config" / "smidja-teams.yaml"
     cfg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(cfg) / "smidja" / "teams.yaml"
 
