@@ -147,7 +147,55 @@ def _config_blocks(w: paths.Where) -> dict:
         return {}
     if out.returncode != 0:
         return {"error": out.stderr.strip()[-400:]}
-    return _expand(json.loads(out.stdout or "{}"))
+    blocks = _expand(json.loads(out.stdout or "{}"))
+    home = home_teams()
+    if home:
+        mine = blocks.get("stacks") or {}
+        if isinstance(mine, list):
+            mine = {t.get("name"): t for t in mine if isinstance(t, dict) and t.get("name")}
+        blocks["stacks"] = {**mine, **home}          # the home's team wins on a shared name
+    return blocks
+
+
+def home_teams() -> dict:
+    """The operator's teams from the home (paths.teams_path), as {name: team}. One file
+    for every machine; a team names the model each agent runs, and a model may be a
+    list — the first one THIS machine's catalog serves is the one used."""
+    f = paths.teams_path()
+    if not f.is_file():
+        return {}
+    code = "import json,sys,yaml;d=yaml.safe_load(open(sys.argv[1])) or {};print(json.dumps(d.get('stacks') or {},default=str))"
+    try:
+        out = subprocess.run([_uv(), "run", "--quiet", "--with", "pyyaml", "python", "-c", code, str(f)],
+                             capture_output=True, text=True, timeout=120)
+    except Refusal:
+        return {}
+    if out.returncode != 0:
+        raise Refusal(f"the teams file does not parse: {f}", out.stderr.strip()[-300:])
+    teams = json.loads(out.stdout or "{}")
+    return {k: {**(v if isinstance(v, dict) else {}), "source": str(f)} for k, v in teams.items()}
+
+
+def team_models(w: paths.Where, name: str) -> dict[str, str]:
+    """{agent: model} for one team, each model the first of its choices this machine
+    serves. A team whose agent has no servable model is refused, naming the agent."""
+    t = _config_blocks(w).get("stacks") or {}
+    team = t.get(name) if isinstance(t, dict) else next((x for x in t if x.get("name") == name), None)
+    if not team:
+        return {}
+    known = {a.get("name") for a in _config_blocks(w).get("agents") or [] if isinstance(a, dict)}
+    out = {}
+    for agent, choice in (team.get("agents") or {}).items() if isinstance(team.get("agents"), dict) else []:
+        if known and agent not in known:
+            raise Refusal(f"team {name!r} names agent {agent!r}, which the config does not have",
+                          f"agents here: {', '.join(sorted(a for a in known if a))}")
+        choices = choice if isinstance(choice, list) else [choice]
+        pick = next((c for c in choices if c and catalog_has(str(c)) is not False), None)
+        if not pick:
+            raise Refusal(f"team {name!r}: no model for agent {agent!r} that this machine serves",
+                          f"its choices: {', '.join(map(str, choices))} — add one this machine has (bin/model/catalog.sh)")
+        out[agent] = str(pick)
+    return out
 
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-((?:[^{}]|\$\{[^{}]*\})*))?\}")
@@ -212,7 +260,7 @@ def team(w: paths.Where, action: str, name: str = "") -> dict:
         raise Refusal(f"no team {name!r}", "list them with: smidja team list")
     if action == "new":
         raise Refusal("a team is not generated — it is made by interviewing the operator",
-                      "load skills/create-new-teams/SKILL.md and add a `stacks:` block to the config with them")
+                      f"load skills/create-new-teams/SKILL.md, then write the team into {paths.teams_path()} (shared by every machine)")
     if action == "smoke":
         return run(w, "scout", "List the top-level folders of this repository and say what each is for.\n"
                                "Done means: every top-level folder is named with one line each.",
@@ -360,7 +408,7 @@ def stamp_runtime(w: paths.Where) -> list[str]:
     return out
 
 
-def run_config(w: paths.Where, smidja_id: str) -> Path | None:
+def run_config(w: paths.Where, smidja_id: str, models: dict[str, str] | None = None) -> Path | None:
     """The config a run is launched with.
 
     Agents work in the PROJECT (a run's cwd is its git root), while the config's
@@ -371,15 +419,20 @@ def run_config(w: paths.Where, smidja_id: str) -> Path | None:
     The operator's config is never edited."""
     if not w.config or not w.config.is_file() or w.root is None:
         return w.config
-    if w.root.resolve() == w.project.resolve():
+    if w.root.resolve() == w.project.resolve() and not models:
         return w.config
     dest = w.data / "sessions" / smidja_id / "smidja.config.yaml"
     dest.parent.mkdir(parents=True, exist_ok=True)
     code = r"""
 import sys, yaml
 from pathlib import Path
+import json
 src, root, dest = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+models = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
 d = yaml.safe_load(open(src)) or {}
+for a in d.get("agents") or []:
+    if a.get("name") in models:
+        a["model"] = models[a["name"]]
 def ab(v):
     return str(root / v) if isinstance(v, str) and v and not v.startswith(("/", "$")) else v
 for a in d.get("agents") or []:
@@ -394,7 +447,8 @@ if isinstance(dfl.get("harness_engineering"), list):
 yaml.safe_dump(d, open(dest, "w"), sort_keys=False, allow_unicode=True)
 """
     out = subprocess.run([_uv(), "run", "--quiet", "--with", "pyyaml", "python", "-c", code,
-                          str(w.config), str(w.root), str(dest)], capture_output=True, text=True, timeout=120)
+                          str(w.config), str(w.root), str(dest), json.dumps(models or {})],
+                         capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         raise Refusal("the run's config could not be prepared", out.stderr.strip()[-400:])
     return dest
@@ -526,13 +580,15 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
     # fault 7). The run stamps what is missing itself, before anything reads them:
     # only missing files, never an operator's tuned prompt.
     stamped = [] if dry_run else stamp_runtime(w)
-    cfg = w.config if dry_run else run_config(w, smidja_id)
+    models = team_models(w, stack) if stack else {}
+    cfg = w.config if dry_run else run_config(w, smidja_id, models)
     if cfg:
         cmd += ["--config", str(cfg)]
     out = {"smidja_id": smidja_id, "chain": script.stem, "project": str(w.project),
            "engine": str(w.engine), "log": str(session_dir / "launch.log"), "viewer": f"{w.viewer}/#/sessions/{smidja_id}",
            "model": model_id or env.get("SMIDJA_LOCAL_MODEL", "(from the config / the home)"),
-           "team": stack or "(the config's default)", "runtime": runtime, "stamped": len(stamped)}
+           "team": stack or "(the config's default)", "runtime": runtime, "stamped": len(stamped),
+           "team_models": models}
     if dry_run:
         out["would_run"] = cmd[:3] + [script.name, "<ask>", *cmd[5:]]
         return out

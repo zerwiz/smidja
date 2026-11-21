@@ -130,6 +130,70 @@ class TestRunStampsPrompts(Fenced):
         self.assertEqual(called, [])
 
 
+
+class TestHomeTeams(Fenced):
+    """Teams live in the operator's home, so every machine has them (2026-11-21)."""
+
+    def setUp(self):
+        super().setUp()
+        self.teams = Path(self.tmp.name) / "teams.yaml"
+        os.environ["SMIDJA_TEAMS"] = str(self.teams)
+        self.addCleanup(os.environ.pop, "SMIDJA_TEAMS", None)
+        real = verbs.catalog_has
+        verbs.catalog_has = lambda m: not str(m).startswith("absent/")
+        self.addCleanup(setattr, verbs, "catalog_has", real)
+        agents = [a.get("name") for a in verbs._config_blocks(verbs.paths.where()).get("agents") or []]
+        self.agent = agents[0] if agents else "builder"
+
+    def write(self, text):
+        self.teams.write_text(textwrap.dedent(text))
+
+    def test_a_home_team_is_listed(self):
+        self.write(f"""\
+            stacks:
+              local-agile:
+                description: the local team
+                agents:
+                  {self.agent}: local/model-a
+            """)
+        code, out = cli.execute(["team", "list"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("local-agile", json.dumps(out))
+
+    def test_the_first_model_this_machine_serves_is_used(self):
+        self.write(f"""\
+            stacks:
+              local-agile:
+                agents:
+                  {self.agent}: [absent/big, local/model-b]
+            """)
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "local-agile"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["team_models"], {self.agent: "local/model-b"})
+
+    def test_a_team_with_no_servable_model_is_refused(self):
+        self.write(f"""\
+            stacks:
+              t:
+                agents:
+                  {self.agent}: [absent/x]
+            """)
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "t"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("no model for agent", out["refused"])
+
+    def test_an_unknown_agent_in_a_team_is_refused(self):
+        self.write("""\
+            stacks:
+              t:
+                agents:
+                  nobody-here: local/x
+            """)
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "t"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("does not have", out["refused"])
+
+
 class TestTaskForm(Fenced):
     def test_task_adds_a_done_line_and_uses_the_default_chain(self):
         os.environ["SMIDJA_DEFAULT_CHAIN"] = "scout"
