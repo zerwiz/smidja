@@ -25,6 +25,21 @@ The prompt is inline text or a file path. Launch in the background so you can po
 
 **A manual run needs nothing declared.** With no `trigger:` block (or `trigger.mode: manual`) the only way this smithy starts is a person typing the command above — which is the default, on purpose. The clock and events reach the same chain through one door, `bin/time/event-trigger.sh`, which reads the config's `trigger:` block; see the Triggers section of [create_config.md](create_config.md). A run started that way is detached and logs to `state/event-trigger/<stamp>-<config>.log`, and its `smidja_id` appears in that log and in the trace like any other run.
 
+### The `smidja` command — start and follow a run from any shell
+
+The same launch, as one command that any harness, shell or phone relay can call. It needs no host and no name: the engine, config and trace are found the way `smidja where` says.
+
+```bash
+smidja run --task "add a /health endpoint" [--team <name>] [--project <path>] [--runtime internal|herdr]
+smidja status <id>     # one answer: state, runtime, team, phase, link to the viewer
+smidja tail <id>       # the live events
+smidja stop <id>       # stop the run
+```
+
+`run` prints the run id and the viewer link at once and returns; the run goes on detached. Without a chain name, `--task` uses `SMIDJA_DEFAULT_CHAIN` (default `plan-build-test`). A task with no `Done means:` line gets a default one added, so a short phone message still starts a run; set `SMIDJA_STRICT_DONE=1` to refuse instead, as the long form `smidja run <chain> "<ask>"` always does. Add `--on <host>` to have another machine answer.
+
+**Choose where the agents run.** `--runtime internal` (the default) runs every agent headless inside the engine's own process. `--runtime herdr` seats each agent turn in a visible pane of a herdr workspace on that machine, labelled `smidja <run id>`, so a person can watch it and type into it. The choice can be set once per machine with `SMIDJA_AGENT_RUNTIME` and overridden per run. If herdr is asked for and not running, the run is refused by name; it never falls back to `internal` silently. A seated turn writes the same event stream the engine reads, so the trace, the gates and the viewer behave the same on both. The seat's settings (`SMIDJA_HERDR_BIN`, `SMIDJA_HERDR_LABEL`, `SMIDJA_HERDR_KEEP`, `SMIDJA_HERDR_TIMEOUT`) are in `engine/smidja_modules/herdr_seat.py`.
+
 ### Listen for the roster
 
 The chain says *what runs*; the config says *who runs it*. **If the engineer references a roster, a config, or a model tier, pass it — do not fall through to the default.**
@@ -224,3 +239,4 @@ For a visual live view, the visualizer app in the skill (`just obs`, or tmux ses
 ## CHANGE LOG
 
 - **2026-11-12** — this document gained a CHANGE LOG section so it carries its history (RULES/06). Its earlier history is its git log; entries are appended below, never rewritten.
+- **2026-11-21** — the `smidja` command gained `run --task`, `status` and the `--runtime internal|herdr` choice; the engine gained the optional herdr seat road.

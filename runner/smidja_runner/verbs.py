@@ -400,12 +400,65 @@ yaml.safe_dump(d, open(dest, "w"), sort_keys=False, allow_unicode=True)
     return dest
 
 
+RUNTIMES = ("internal", "herdr")
+
+
+def herdr_ok() -> tuple[bool, str]:
+    """The herdr runtime needs herdr on PATH and its server answering."""
+    exe = shutil.which(os.environ.get("SMIDJA_HERDR_BIN", "herdr"))
+    if not exe:
+        return False, "herdr is not on PATH"
+    try:
+        out = subprocess.run([exe, "workspace", "list"], capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return False, "herdr did not answer"
+    return (out.returncode == 0, "herdr answers" if out.returncode == 0 else out.stderr.strip()[-200:])
+
+
+DEFAULT_DONE = "Done means: the task above is carried out, checked, and the result is reported."
+
+
+def run_info(w: paths.Where, smidja_id: str) -> dict:
+    f = w.data / "sessions" / smidja_id / "run.json"
+    try:
+        return json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def status(w: paths.Where, smidja_id: str) -> dict:
+    """One short answer for one run: state, runtime, team, phase, link, last words."""
+    info = run_info(w, smidja_id)
+    try:
+        s = _need_run(w, smidja_id)
+    except Refusal:
+        if not info:
+            raise
+        # Launched here, but the chain has not written its first trace row: say what its log says.
+        log = w.data / "sessions" / smidja_id / "launch.log"
+        tail = log.read_text(errors="replace")[-600:].strip() if log.is_file() else ""
+        return {"smidja_id": smidja_id, "state": "not-traced-yet", "alive": False, "runtime": info.get("runtime", "unknown"),
+                "team": info.get("team") or "(default)", "launch_log": tail or "(empty)",
+                "viewer": f"{w.viewer}/#/sessions/{smidja_id}"}
+    ph = trace.phases(w.db, smidja_id)
+    live = bool(trace.processes(w.db, smidja_id))
+    current = next((p for p in ph if p.get("status") in ("running", "in_progress")), None) or (ph[-1] if ph else {})
+    ev = trace.events(w.db, smidja_id, after=0, limit=200)
+    last = ev[-1] if ev else {}
+    return {"smidja_id": smidja_id, "state": s["status"], "alive": live,
+            "runtime": info.get("runtime", "unknown"), "team": info.get("team") or "(default)",
+            "phase": current.get("name", "-"), "phases_done": sum(1 for p in ph if p.get("status") in ("done", "passed", "complete")),
+            "phases_total": len(ph), "last": f"{last.get('type', '')} {last.get('name', '')}".strip(),
+            "viewer": f"{w.viewer}/#/sessions/{smidja_id}", "started_at": s.get("started_at"), "ended_at": s.get("ended_at")}
+
+
 DONE_MEANS = re.compile(r"\bdone means\b", re.I)
 
 
 def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, tier: str | None = None,
         stack: str | None = None, mode: str | None = None, service: str | None = None,
-        smidja_id: str | None = None, no_done_check: bool = False, dry_run: bool = False) -> dict:
+        smidja_id: str | None = None, no_done_check: bool = False, dry_run: bool = False,
+        runtime: str | None = None) -> dict:
     """Launch a chain DETACHED (its own session), so no tool-call timeout can kill it
     mid-generation (the sdlc-4027 lesson). Returns at once with the run id."""
     if paths.kill_switch().exists():
@@ -436,6 +489,16 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
     script = chain_script(w, chain)
     smidja_id = smidja_id or secrets.token_hex(4)
     env = paths.run_env(w)
+    runtime = (runtime or os.environ.get("SMIDJA_AGENT_RUNTIME") or "internal").strip().lower()
+    if runtime not in RUNTIMES:
+        raise Refusal(f"unknown runtime {runtime!r}", "internal (the engine runs its agents headless) | herdr (each agent seated in a visible pane)")
+    if runtime == "herdr" and not dry_run:
+        ok, why = herdr_ok()
+        if not ok:
+            raise Refusal(f"the herdr runtime was asked for and cannot be had: {why}",
+                          "start herdr on this machine, or run with --runtime internal")
+    env["SMIDJA_AGENT_RUNTIME"] = runtime
+    env["SMIDJA_RUN_ID"] = smidja_id
     if model_id:
         env["SMIDJA_LOCAL_MODEL"] = model_id
     if tier:
@@ -450,11 +513,14 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
     out = {"smidja_id": smidja_id, "chain": script.stem, "project": str(w.project),
            "engine": str(w.engine), "log": str(session_dir / "launch.log"), "viewer": f"{w.viewer}/#/sessions/{smidja_id}",
            "model": model_id or env.get("SMIDJA_LOCAL_MODEL", "(from the config / the home)"),
-           "team": stack or "(the config's default)"}
+           "team": stack or "(the config's default)", "runtime": runtime}
     if dry_run:
         out["would_run"] = cmd[:3] + [script.name, "<ask>", *cmd[5:]]
         return out
     session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "run.json").write_text(json.dumps({
+        "smidja_id": smidja_id, "chain": script.stem, "project": str(w.project), "team": stack or "",
+        "runtime": runtime, "task": request[:400], "started_at": trace.now_iso()}))
     log = (session_dir / "launch.log").open("a")
     # The run's cwd is the PROJECT: the engine spawns every agent in the git root of its cwd.
     proc = subprocess.Popen(cmd, cwd=w.project, env=env, stdin=subprocess.DEVNULL,
