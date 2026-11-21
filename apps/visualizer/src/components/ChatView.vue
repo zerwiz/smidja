@@ -160,6 +160,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <button class="pick-new" type="button" @click="onNew">＋ New chat</button>
         </div>
       </span>
+      <button class="new-chat-btn" type="button" title="Start a new conversation" @click="onNew">＋ New chat</button>
       <span class="live"><span class="live-dot" /> live</span>
     </header>
 
@@ -208,6 +209,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 /* ── multi-session switcher ──────────────────────────────────────────── */
 .session-picker { position: relative; margin-left: 14px; flex: none; }
+.new-chat-btn {
+  margin-left: 8px; flex: none; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  background: transparent; color: inherit; border: 1px solid var(--line, #333); font: inherit; font-size: 12px;
+}
+.new-chat-btn:hover { border-color: var(--blue); }
 .model-picker { position: relative; flex: none; }
 .model-input {
   font-family: var(--mono);
