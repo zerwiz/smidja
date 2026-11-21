@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import paths, remote, verbs
@@ -19,7 +20,11 @@ VERBS_HELP = """verbs:
   chains                            the chains this engine has, with their Phases: line
   run <chain> "<ask>"               launch detached; prints the run id at once
       [--mode M] [--service S] [--stack S] [--model P/M] [--tier T] [--smidja-id ID]
-      [--no-done-check] [--dry-run]
+      [--runtime internal|herdr] [--no-done-check] [--dry-run]
+  run --task "<ask>" [--team T] [--project P] [--runtime R]
+                                    the short form: chain from SMIDJA_DEFAULT_CHAIN (plan-build-test);
+                                    a missing 'Done means:' line is added unless SMIDJA_STRICT_DONE=1
+  status <id>                       one answer: state, runtime, team, phase, link
   modes | services | rosters        the config's presets, teams and agents
   team list|show|new|smoke [name]   teams are `stacks:` in the config
   model show|set|pin [role] [model] which model a role runs (set prints the export)
@@ -71,7 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("args", nargs="*")
     p.add_argument("--on", metavar="HOST", help="have another machine answer, over ssh")
     p.add_argument("--json", action="store_true", help="machine-clean output")
-    p.add_argument("--project-dir")
+    p.add_argument("--project-dir", "--project")
+    p.add_argument("--task", help="the ask as text (run): a chain is chosen for you unless one is named")
+    p.add_argument("--team", help="the team (a `stacks:` entry) that runs it; same as --stack")
+    p.add_argument("--runtime", choices=("internal", "herdr"),
+                   help="internal: the engine runs its agents headless; herdr: each agent is seated in a visible pane")
     for flag in ("--mode", "--service", "--stack", "--roster", "--model", "--tier", "--smidja-id",
                  "--from-phase", "--note", "--thinking", "--tools", "--writes", "--purpose"):
         p.add_argument(flag)
@@ -89,11 +98,27 @@ def _arg(args: list[str], i: int, what: str) -> str:
     return args[i]
 
 
+def _run(w, ns, a, stack) -> dict:
+    """`smidja run <chain> "<ask>"`, or the short form `smidja run --task "<ask>"`: the chain
+    comes from --mode/--service, else SMIDJA_DEFAULT_CHAIN, else plan-build-test."""
+    chain = a[0] if (a and (len(a) > 1 or ns.task or not (ns.mode or ns.service))) else ""
+    ask = ns.task if ns.task else (a[-1] if a else "")
+    done_check = ns.no_done_check
+    if ns.task and not (ns.mode or ns.service):
+        chain = chain or os.environ.get("SMIDJA_DEFAULT_CHAIN", "plan-build-test")
+        if not verbs.DONE_MEANS.search(ask) and not done_check and os.environ.get("SMIDJA_STRICT_DONE") != "1":
+            ask = f"{ask.rstrip()}\n\n{verbs.DEFAULT_DONE}"
+    out = verbs.run(w, chain, ask, model_id=ns.model, tier=ns.tier, stack=stack, mode=ns.mode,
+                    service=ns.service, smidja_id=ns.smidja_id, no_done_check=done_check,
+                    dry_run=ns.dry_run, runtime=ns.runtime)
+    return out
+
+
 def dispatch(ns: argparse.Namespace) -> dict:
     w = paths.where(ns.project_dir)
     a = ns.args
     v = ns.verb.replace("_", "-")
-    stack = ns.stack or ns.roster
+    stack = ns.team or ns.stack or ns.roster
     table = {
         "where": lambda: {k: str(val) for k, val in vars(w).items()},
         "up": lambda: verbs.up(w),
@@ -105,10 +130,8 @@ def dispatch(ns: argparse.Namespace) -> dict:
         "team": lambda: verbs.team(w, a[0] if a else "list", a[1] if len(a) > 1 else ""),
         "model": lambda: verbs.model(w, a[0] if a else "show", a[1] if len(a) > 1 else "",
                                      a[2] if len(a) > 2 else ""),
-        "run": lambda: verbs.run(w, a[0] if (a and (len(a) > 1 or not (ns.mode or ns.service))) else "",
-                                 a[-1] if a else "", model_id=ns.model, tier=ns.tier, stack=stack,
-                                 mode=ns.mode, service=ns.service, smidja_id=ns.smidja_id,
-                                 no_done_check=ns.no_done_check, dry_run=ns.dry_run),
+        "run": lambda: _run(w, ns, a, stack),
+        "status": lambda: verbs.status(w, _arg(a, 0, "run id")),
         "sessions": lambda: verbs.sessions(w, int(a[0]) if a else 10),
         "phases": lambda: verbs.phases(w, _arg(a, 0, "run id")),
         "tail": lambda: verbs.tail(w, _arg(a, 0, "run id"), int(a[1]) if len(a) > 1 else 25),

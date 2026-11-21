@@ -330,65 +330,92 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
 
     result = PiResult(session_id=request.session_id,
                       context_window=context_window(provider, model_id))
-    # stdin is DEVNULL, deliberately. The prompt travels in argv, so the child
-    # never needs stdin — but inheriting the parent's means pi sees a non-TTY
-    # and can sit forever waiting for piped input that will never arrive or
-    # EOF. That failure is silent and total: no request goes out, no bytes come
-    # back, and the smidja blocks on a read loop with nothing to read. Observed as
-    # a run that sat idle at 0% CPU with an empty raw_output.jsonl.
-    process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, bufsize=1, cwd=request.cwd,
-                               env=operator_env())
-    if on_spawn:
-        on_spawn(process.pid)
-    with raw_path.open("a") as raw:
+    from . import herdr_seat
+    seated = None
+    if herdr_seat.runtime() == "herdr":
+        # The optional herdr runtime: the turn is seated in a visible pane (herdr_seat.py).
+        env = operator_env()
+        seated = herdr_seat.seat(cmd, request.cwd, raw_path, env, f"{request.session_id} · {model_id}")
+        pid = seated.pid()
+        if on_spawn:
+            on_spawn(pid)
+        stream = seated.lines()
+        process = None
+    else:
+        # stdin is DEVNULL, deliberately. The prompt travels in argv, so the child
+        # never needs stdin — but inheriting the parent's means pi sees a non-TTY
+        # and can sit forever waiting for piped input that will never arrive or
+        # EOF. That failure is silent and total: no request goes out, no bytes come
+        # back, and the smidja blocks on a read loop with nothing to read. Observed as
+        # a run that sat idle at 0% CPU with an empty raw_output.jsonl.
+        process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, bufsize=1, cwd=request.cwd,
+                                   env=operator_env())
+        pid = process.pid
+        if on_spawn:
+            on_spawn(pid)
         assert process.stdout is not None
-        for line in process.stdout:
+        stream = process.stdout
+    raw = raw_path.open("a") if process is not None else None
+    last_error = ""
+    for line in stream:
+        if raw is not None:
             raw.write(line)
             raw.flush()                      # events land on disk as they happen
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "message_end":
-                message = event.get("message", {})
-                if message.get("role") == "assistant":
-                    text = _text_of(message)
-                    if text:
-                        result.text = text   # last assistant message wins
-                    usage = message.get("usage", {}) or {}
-                    turn = _context_tokens(usage)
-                    result.tokens += turn
-                    result.usage.add_turn(usage, turn)
-                    # Occupancy is read off the last VALID assistant turn, the
-                    # way pi does it — an aborted or errored turn reports usage
-                    # you can't trust, so it must not overwrite a good reading.
-                    if turn and message.get("stopReason") not in ("aborted", "error"):
-                        result.context_tokens = turn
-                        result.last_usage = usage
-                        result.last_finish = str(message.get("stopReason") or "")
-                    result.cost += (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0
-                    # P2 additive live-spend forward (mirrors opencode): the
-                    # runner traces + bumps the session row mid-run. Additive;
-                    # end-of-phase add_usage still finalizes.
-                    if on_event and turn:
-                        on_event({
-                            "type": "usage",
-                            "tokens": int(turn),
-                            "cost": (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0,
-                            "surface": "pi",
-                        })
-            if on_event:
-                on_event(event)
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "message_end":
+            message = event.get("message", {})
+            if message.get("role") == "assistant":
+                if message.get("stopReason") == "error" and message.get("errorMessage"):
+                    last_error = str(message["errorMessage"])
+                text = _text_of(message)
+                if text:
+                    result.text = text   # last assistant message wins
+                usage = message.get("usage", {}) or {}
+                turn = _context_tokens(usage)
+                result.tokens += turn
+                result.usage.add_turn(usage, turn)
+                # Occupancy is read off the last VALID assistant turn, the
+                # way pi does it — an aborted or errored turn reports usage
+                # you can't trust, so it must not overwrite a good reading.
+                if turn and message.get("stopReason") not in ("aborted", "error"):
+                    result.context_tokens = turn
+                    result.last_usage = usage
+                    result.last_finish = str(message.get("stopReason") or "")
+                result.cost += (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0
+                # P2 additive live-spend forward (mirrors opencode): the
+                # runner traces + bumps the session row mid-run. Additive;
+                # end-of-phase add_usage still finalizes.
+                if on_event and turn:
+                    on_event({
+                        "type": "usage",
+                        "tokens": int(turn),
+                        "cost": (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0,
+                        "surface": "pi",
+                    })
+        if on_event:
+            on_event(event)
+    if raw is not None:
+        raw.close()
 
-    stderr = process.stderr.read() if process.stderr else ""
-    result.returncode = process.wait()
+    if seated is not None:
+        stderr, result.returncode = seated.stderr, seated.returncode if seated.returncode is not None else 1
+        seated.finish()
+    else:
+        stderr = process.stderr.read() if process.stderr else ""
+        result.returncode = process.wait()
     if on_exit:
-        on_exit(process.pid)
+        on_exit(pid)
+    if not result.text and last_error:
+        # A model refusal (a usage limit, a bad key) used to surface as "no JSON object found".
+        raise RuntimeError(f"the model answered with an error: {last_error.strip()[:400]}")
     if result.returncode != 0 and not result.text:
         raise RuntimeError(f"pi exited {result.returncode}: {stderr.strip()[-800:]}")
     return result
