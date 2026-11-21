@@ -71,6 +71,65 @@ class TestRuntimeChoice(Fenced):
         self.assertIn("herdr runtime was asked for", out["refused"])
 
 
+
+class TestTeamCheck(Fenced):
+    """Run audit fault 6: a team the config does not define is refused at launch."""
+
+    def _with_teams(self, names):
+        real = verbs._block_list
+        verbs._block_list = lambda w, key, book: ({"stacks": [{"name": n} for n in names]} if key == "stacks" else real(w, key, book))
+        self.addCleanup(setattr, verbs, "_block_list", real)
+
+    def test_a_misspelt_team_is_refused_with_the_list(self):
+        self._with_teams(["local-cron", "local-agile"])
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "local-crn"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("no team 'local-crn'", out["refused"])
+        self.assertIn("local-cron", json.dumps(out))
+
+    def test_a_known_team_is_accepted(self):
+        self._with_teams(["local-cron"])
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "local-cron"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["team"], "local-cron")
+
+    def test_no_stacks_block_leaves_the_engine_to_judge(self):
+        self._with_teams([])
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run", "--team", "anything"])
+        self.assertEqual(code, 0, out)
+
+
+
+class TestRunStampsPrompts(Fenced):
+    """Run audit fault 7: a run stamps the missing prompts itself, before it launches."""
+
+    def test_the_run_stamps_before_it_launches(self):
+        order = []
+        real_stamp, real_popen = verbs.stamp_runtime, verbs.subprocess.Popen
+        verbs.stamp_runtime = lambda w: order.append("stamp") or ["p1", "p2"]
+
+        def no_launch(cmd, *a, **k):
+            if "--smidja-id" not in list(cmd):          # a helper's own subprocess, not the launch
+                return real_popen(cmd, *a, **k)
+            order.append("launch")
+            raise RuntimeError("stop here")
+        verbs.subprocess.Popen = no_launch
+        self.addCleanup(setattr, verbs, "stamp_runtime", real_stamp)
+        self.addCleanup(setattr, verbs.subprocess, "Popen", real_popen)
+        with self.assertRaises(RuntimeError):
+            verbs.run(verbs.paths.where(), "scout", "x.\nDone means: y.")
+        self.assertEqual(order, ["stamp", "launch"])
+
+    def test_a_dry_run_stamps_nothing(self):
+        called = []
+        real = verbs.stamp_runtime
+        verbs.stamp_runtime = lambda w: called.append(1) or []
+        self.addCleanup(setattr, verbs, "stamp_runtime", real)
+        code, out = cli.execute(["run", "scout", "x.\nDone means: y.", "--dry-run"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(called, [])
+
+
 class TestTaskForm(Fenced):
     def test_task_adds_a_done_line_and_uses_the_default_chain(self):
         os.environ["SMIDJA_DEFAULT_CHAIN"] = "scout"
@@ -172,6 +231,31 @@ class TestHerdrSeat(Fenced):
         calls = self.log.read_text()
         self.assertIn("workspace create --label smidja t1", calls)
         self.assertIn("pane run w9:p1", calls)
+
+    def test_pid_is_the_agents_own_not_the_panes_shell(self):
+        """Run audit fault 8: the stand-in herdr says the pane's pid is 4242; the seat
+        must report the agent's own pid, which the agent itself prints."""
+        raw = Path(self.tmp.name) / "turn-pid" / "raw_output.jsonl"
+        s = self.seat_mod.seat(["bash", "-c", "echo \"{\\\"type\\\":\\\"$$\\\"}\""], self.tmp.name, raw, {}, "t1 · pid")
+        pid = s.pid()
+        lines = [json.loads(x)["type"] for x in s.lines()]
+        self.assertNotEqual(pid, 4242)
+        self.assertEqual(str(pid), lines[0])
+
+    def test_a_seated_pane_is_recorded_and_closed_by_close_panes(self):
+        seats = Path(self.tmp.name) / "seats"
+        os.environ["SMIDJA_SEAT_DIR"] = str(seats)
+        try:
+            raw = Path(self.tmp.name) / "turn-close" / "raw_output.jsonl"
+            s = self.seat_mod.seat(["bash", "-c", "true"], self.tmp.name, raw, {}, "t1 · close")
+            list(s.lines())
+        finally:
+            os.environ.pop("SMIDJA_SEAT_DIR")
+        self.assertTrue(list(seats.glob("*.pane")))
+        closed = self.seat_mod.close_panes(seats)
+        self.assertTrue(closed)
+        self.assertIn(f"pane close {closed[0]}", self.log.read_text())
+        self.assertFalse(list(seats.glob("*.pane")))
 
     def test_a_failing_turn_reports_its_code_and_keeps_its_pane(self):
         raw = Path(self.tmp.name) / "turn2" / "raw_output.jsonl"

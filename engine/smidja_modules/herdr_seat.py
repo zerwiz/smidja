@@ -126,14 +126,26 @@ class Seat:
         self.raw_path = raw_path
         self.rc_path = raw_path.with_suffix(raw_path.suffix + ".rc")
         self.err_path = raw_path.with_suffix(raw_path.suffix + ".err")
+        # The AGENT's own pid, written by the seat script just before it execs the agent
+        # (run audit, fault 8): herdr's process-info names the pane's shell, and a stop
+        # sent there never reached the agent.
+        self.pid_path = raw_path.with_suffix(raw_path.suffix + ".pid")
         self.returncode: Optional[int] = None
         self.pane = ""
         self.stderr = ""
         self._timeout = int(os.environ.get("SMIDJA_HERDR_TIMEOUT", "7200"))
         raw_path.parent.mkdir(parents=True, exist_ok=True)
-        for p in (self.rc_path, self.err_path):
+        for p in (self.rc_path, self.err_path, self.pid_path):
             p.unlink(missing_ok=True)
         self.pane = _new_pane(cwd)
+        # Where a stop finds this run's panes to close them (SMIDJA_SEAT_DIR is set by the
+        # runner per run; beside the raw stream otherwise).
+        seat_dir = Path(os.environ.get("SMIDJA_SEAT_DIR") or raw_path.parent)
+        try:
+            seat_dir.mkdir(parents=True, exist_ok=True)
+            (seat_dir / f"{self.pane.replace(':', '_')}.pane").write_text(self.pane)
+        except OSError:
+            pass
         # The pane's shell runs the turn; the tee filter writes the raw stream the engine
         # tails and prints a readable view for the person watching.
         tee = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).with_name('herdr_tee.py')))} {shlex.quote(str(raw_path))}"
@@ -143,11 +155,22 @@ class Seat:
             "#!/usr/bin/env bash\n"
             f"cd {shlex.quote(cwd)} || exit 1\n"
             f"printf '\\n== %s ==\\n' {shlex.quote(title)}\n"
-            f"{exports} {shlex.join(argv)} 2> >(tee {shlex.quote(str(self.err_path))} >&2) | {tee}\n"
+            f"{exports} bash -c {shlex.quote('echo $$ > ' + shlex.quote(str(self.pid_path)) + '; exec \"$@\"')} agent {shlex.join(argv)}"
+            f" 2> >(tee {shlex.quote(str(self.err_path))} >&2) | {tee}\n"
             f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(self.rc_path))}\n")
         _herdr("pane", "run", self.pane, f"clear; bash {shlex.quote(str(script))}")
 
     def pid(self) -> int:
+        """The agent's own pid (from the seat script), waiting briefly for it to start;
+        the pane's process only as a last resort."""
+        for _ in range(40):
+            try:
+                text = self.pid_path.read_text().strip()
+                if text:
+                    return int(text)
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.05)
         try:
             info = _herdr("pane", "process-info", self.pane)
             return int(_find(info, "pid") or 0)
@@ -194,3 +217,17 @@ class Seat:
 
 def seat(argv: list[str], cwd: str, raw_path: Path, env: dict, title: str) -> Seat:
     return Seat(argv, cwd, raw_path, env, title)
+
+
+def close_panes(seat_dir: Path) -> list[str]:
+    """Close every pane a run seated (used by stop). A pane already gone is not an error."""
+    closed = []
+    for f in sorted(Path(seat_dir).glob("*.pane")):
+        pane = f.read_text().strip()
+        try:
+            _herdr("pane", "close", pane)
+            closed.append(pane)
+        except HerdrUnavailable:
+            pass
+        f.unlink(missing_ok=True)
+    return closed

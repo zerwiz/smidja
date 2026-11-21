@@ -34,6 +34,11 @@ import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _deps import require  # noqa: E402
+
+require()
+
 HERE = Path(__file__).resolve().parents[1]              # apps/smidja-factory
 SHIPPED = HERE / "templates" / "smidja"
 CHAIN = HERE / "tests" / "fixtures" / "recovery_chain.py"

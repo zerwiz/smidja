@@ -452,6 +452,18 @@ def status(w: paths.Where, smidja_id: str) -> dict:
             "viewer": f"{w.viewer}/#/sessions/{smidja_id}", "started_at": s.get("started_at"), "ended_at": s.get("ended_at")}
 
 
+def _check_team(w: paths.Where, team: str) -> None:
+    """Refuse a team the config does not define, naming the teams it does (run audit, fault 6).
+
+    A misspelt team used to be passed through as SMIDJA_ROSTER and accepted at launch.
+    When the config has no `stacks:` block there is nothing to check against, and the
+    engine's own roster lookup stays the judge.
+    """
+    teams = [t.get("name") for t in _block_list(w, "stacks", "create-new-teams")["stacks"] if t.get("name")]
+    if teams and team not in teams:
+        raise Refusal(f"no team {team!r} in the config", f"teams here: {', '.join(teams)}")
+
+
 DONE_MEANS = re.compile(r"\bdone means\b", re.I)
 
 
@@ -475,6 +487,8 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
             tier = preset.get("tier") or tier
     if not chain:
         raise Refusal("which chain? smidja run <chain> \"<ask>\"", "list them with: smidja chains")
+    if stack:
+        _check_team(w, stack)
     request = ask
     if ask and Path(ask).is_file():
         request = Path(ask).read_text()
@@ -499,6 +513,7 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
                           "start herdr on this machine, or run with --runtime internal")
     env["SMIDJA_AGENT_RUNTIME"] = runtime
     env["SMIDJA_RUN_ID"] = smidja_id
+    env["SMIDJA_SEAT_DIR"] = str(w.data / "sessions" / smidja_id / "seats")
     if model_id:
         env["SMIDJA_LOCAL_MODEL"] = model_id
     if tier:
@@ -507,13 +522,17 @@ def run(w: paths.Where, chain: str, ask: str, *, model_id: str | None = None, ti
         env["SMIDJA_ROSTER"] = stack
     session_dir = w.data / "sessions" / smidja_id
     cmd = [_uv(), "run", "--quiet", str(script), request, "--smidja-id", smidja_id]
+    # A fresh install has no prompts on disk until `smidja up` stamps them (run audit,
+    # fault 7). The run stamps what is missing itself, before anything reads them:
+    # only missing files, never an operator's tuned prompt.
+    stamped = [] if dry_run else stamp_runtime(w)
     cfg = w.config if dry_run else run_config(w, smidja_id)
     if cfg:
         cmd += ["--config", str(cfg)]
     out = {"smidja_id": smidja_id, "chain": script.stem, "project": str(w.project),
            "engine": str(w.engine), "log": str(session_dir / "launch.log"), "viewer": f"{w.viewer}/#/sessions/{smidja_id}",
            "model": model_id or env.get("SMIDJA_LOCAL_MODEL", "(from the config / the home)"),
-           "team": stack or "(the config's default)", "runtime": runtime}
+           "team": stack or "(the config's default)", "runtime": runtime, "stamped": len(stamped)}
     if dry_run:
         out["would_run"] = cmd[:3] + [script.name, "<ask>", *cmd[5:]]
         return out
@@ -584,9 +603,31 @@ def record(w: paths.Where, smidja_id: str) -> dict:
 
 # ── control ─────────────────────────────────────────────────────────────────
 
+def _close_seats(w: paths.Where, smidja_id: str) -> list[str]:
+    """Close the herdr panes a run seated (run audit, fault 8). A run on the internal
+    runtime has none; a pane already gone, or no herdr here, is not an error."""
+    seat_dir = w.data / "sessions" / smidja_id / "seats"
+    exe = shutil.which(os.environ.get("SMIDJA_HERDR_BIN", "herdr"))
+    closed = []
+    for f in sorted(seat_dir.glob("*.pane")) if seat_dir.is_dir() else []:
+        pane = f.read_text().strip()
+        if exe and pane:
+            try:
+                subprocess.run([exe, "pane", "close", pane], capture_output=True, text=True, timeout=10)
+                closed.append(pane)
+            except subprocess.TimeoutExpired:
+                pass
+        f.unlink(missing_ok=True)
+    return closed
+
+
 def stop(w: paths.Where, smidja_id: str) -> dict:
+    """SIGTERM to the run's processes — the agents by their own pids, which the herdr
+    seat records — then close the panes it seated."""
     _need_run(w, smidja_id)
-    return trace.stop(w.db, smidja_id)
+    out = trace.stop(w.db, smidja_id)
+    out["panes_closed"] = _close_seats(w, smidja_id)
+    return out
 
 
 def pause(w: paths.Where, smidja_id: str) -> dict:
