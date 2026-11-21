@@ -25,6 +25,10 @@ The task was "read `README.md` and name its one heading", sent to the `scout` ch
 | 7 | `smidja doctor` reports `prompts: fail` on a fresh install until `smidja up` is run. Whether `run` stamps them by itself was not tested. | `runner/smidja_runner/verbs.py` | Open, issue filed |
 | 8 | Under the herdr runtime, `stop` signals the pane's shell, not the agent inside it. Whether the agent then ends was not tested. | `engine/smidja_modules/herdr_seat.py` | Open, issue filed |
 
+## A note on the later runs
+
+Two more runs were started through the Ymir run door, one per runtime. Both finished. The model's key limit was reached during them, so the host's model fallback answered with a free model, and that run's summary named a different README than the project's. The seat was not at fault. The error text now reaches the trace (fault 2), which is how the cause was found.
+
 ## Two notes for the host
 
 The host's pi extensions inject a session-start digest into every agent the smithy starts. That is the host's own configuration, not the smithy's, and it adds tokens to each turn. It is recorded here so the host can decide.
