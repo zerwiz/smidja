@@ -9,5 +9,5 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: ./install.sh
       - run: ./install.sh --check
-      - run: python3 -m unittest discover -s runner/tests
+      - run: uv run --with pydantic --with pyyaml --with python-dotenv --with rich python -m unittest discover -s runner/tests
       - run: uv run --with pytest --with pydantic --with pyyaml --with python-dotenv --with rich python -m pytest -q tests
