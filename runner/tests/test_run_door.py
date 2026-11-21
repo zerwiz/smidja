@@ -82,6 +82,11 @@ class TestTaskForm(Fenced):
         self.assertEqual(out["chain"], "smidja_scout")
         self.assertEqual(out["team"], "alpha")
 
+    def test_a_named_chain_beside_task_is_the_chain(self):
+        code, out = cli.execute(["run", "scout", "--task", "look", "--dry-run"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["chain"], "smidja_scout")
+
     def test_strict_mode_keeps_the_done_means_rule(self):
         os.environ["SMIDJA_STRICT_DONE"] = "1"
         try:
