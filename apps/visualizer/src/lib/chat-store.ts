@@ -9,7 +9,7 @@
  *   POST /api/chat/session          → launch a smidja run
  *   POST /api/chat/steer            → inject guidance mid-run
  */
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import type { ChatMessage, ModelInfo, RosterInfo, SessionLaunch, SessionStartRequest } from './types'
 import {
   controlChatSession,
@@ -39,8 +39,44 @@ export const pending = ref(false)
 export const error = ref<string | null>(null)
 export const loaded = ref(false)
 
+/** Where the browser remembers which conversation this visit is in. sessionStorage
+ * lives as long as the tab: a reload keeps the conversation, a fresh visit (a new
+ * tab or a new browser start) begins a new one. The last conversation is also kept
+ * in localStorage, so the switcher can say where you were. */
+const CURRENT_KEY = 'smidja.chat.current'
+const LAST_KEY = 'smidja.chat.last'
+
+export function freshChatId(): string {
+  return `chat-${Date.now().toString(36)}`
+}
+
+function store(kind: 'session' | 'local'): Storage | null {
+  try {
+    return kind === 'session' ? window.sessionStorage : window.localStorage
+  } catch {
+    return null
+  }
+}
+
+/** The conversation this visit opens on: the one this tab was already in, or a new one. */
+export function initialChatId(): string {
+  return store('session')?.getItem(CURRENT_KEY) || freshChatId()
+}
+
 /** The active chat session id (persisted conversation on the server). */
-export const sessionId = ref('default')
+export const sessionId = ref(initialChatId())
+
+/** The conversation the user was last in, on any visit ('' when none). */
+export const lastChatId = ref(store('local')?.getItem(LAST_KEY) ?? '')
+
+watch(
+  sessionId,
+  (id) => {
+    store('session')?.setItem(CURRENT_KEY, id)
+    store('local')?.setItem(LAST_KEY, id)
+  },
+  { immediate: true },
+)
 
 /** All persisted chat sessions, newest first (multi-session switcher). */
 export const chatSessions = ref<{ id: string; messages: number; updated_at: string | null }[]>([])
@@ -178,8 +214,7 @@ export async function switchChat(id: string): Promise<void> {
 
 /** Start a brand-new chat conversation with a fresh id. */
 export async function newChat(): Promise<void> {
-  const id = `chat-${Date.now().toString(36)}`
-  sessionId.value = id
+  sessionId.value = freshChatId()
   messages.value = []
   activeSession.value = null
   side.panel = 'idle'
