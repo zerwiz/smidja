@@ -26,7 +26,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]              # apps/smidja-factory
 SHIPPED = HERE / "templates" / "smidja"
-INSTANCE = HERE.parent / "smidja"
+INSTANCE = HERE / "engine"
 sys.path.insert(0, str(SHIPPED))
 
 from smidja_modules import resume, runrecord                            # noqa: E402
