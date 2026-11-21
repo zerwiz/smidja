@@ -101,7 +101,7 @@ def _arg(args: list[str], i: int, what: str) -> str:
 def _run(w, ns, a, stack) -> dict:
     """`smidja run <chain> "<ask>"`, or the short form `smidja run --task "<ask>"`: the chain
     comes from --mode/--service, else SMIDJA_DEFAULT_CHAIN, else plan-build-test."""
-    chain = a[0] if (a and (len(a) > 1 or not (ns.mode or ns.service or ns.task))) else ""
+    chain = a[0] if (a and (len(a) > 1 or ns.task or not (ns.mode or ns.service))) else ""
     ask = ns.task if ns.task else (a[-1] if a else "")
     done_check = ns.no_done_check
     if ns.task and not (ns.mode or ns.service):
