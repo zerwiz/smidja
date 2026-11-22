@@ -1,0 +1,35 @@
+# privacy-guard — this public repository never carries a secret or a private word (house law: RULES/04).
+# Two wards, on every push and pull request:
+#   1. gitleaks over the whole history — keys, tokens, passwords;
+#   2. the private-word scan — the words, hosts and addresses the operator has declared private.
+#      The list lives ONLY in the repository secret PRIVATE_WORDS (one case-insensitive regex per line),
+#      never in this file; a fork without the secret skips this ward and says so.
+name: privacy-guard
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (whole history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: private words (the tree)
+        env:
+          PRIVATE_WORDS: ${{ secrets.PRIVATE_WORDS }}
+        run: |
+          if [ -z "$PRIVATE_WORDS" ]; then echo "PRIVATE_WORDS is not set here — the private-word ward is skipped"; exit 0; fi
+          printf '%s\n' "$PRIVATE_WORDS" | sed '/^\s*$/d' > /tmp/words
+          hits=$(git ls-files -z | grep -zvE '(^|/)(package-lock\.json|bun\.lock|pnpm-lock\.yaml|yarn\.lock)$' \
+                 | xargs -0 grep -nIiE -f /tmp/words -- 2>/dev/null | cut -d: -f1,2 || true)
+          if [ -n "$hits" ]; then
+            echo "::error::a private word is in the tree (the word itself is not printed):"; printf '%s\n' "$hits"; exit 1
+          fi
+          echo "private-word ward: clean"
