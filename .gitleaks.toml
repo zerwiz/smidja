@@ -15,7 +15,7 @@ useDefault = true
 [[allowlists]]
 description = "the vendored wards name the shapes they hunt; they carry no credential"
 paths = [
-  '''^bin/gates/guards/''',
-  '''^bin/gates/secret-scan\.sh$''',
-  '''^bin/forge/pr-patterns\.sh$''',
+  '''(^|/)bin/gates/guards/''',
+  '''(^|/)bin/gates/secret-scan\.sh$''',
+  '''(^|/)bin/forge/pr-patterns\.sh$''',
 ]
