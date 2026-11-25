@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""public-guard.py — the public tree carries TEMPLATES and LOGIC, and nothing private.
+
+RULES/04, at the Allfather's word (2026-11-03): *"YMIR CAN ONLY CARRY TEMPLASTE AND LOCIG::
+NOT SECREATS OR PRIVATE DATA::"*. The repository is PUBLIC, so four classes are refused:
+
+  1. SECRET   — a credential shape (key, token, private key header).
+  2. NAME     — a word the operator has declared his own (`$YMIR_HOME/hodd/security/operator-words.txt`).
+                The words are NEVER in this file: RULES/04 says a guard that names them re-creates the leak.
+  3. TOPOLOGY — a private address, a tailnet host, a machine name. Allowed only as a SHAPE:
+                a CIDR range (`192.168.0.0/16`), RFC 5737 documentation space, or `<host>.tailnet.ts.net`.
+  4. MAILBOX  — a personal address. Allowed only as an RFC 2606 example domain, a noreply account
+                form, a house identity on a GENERIC domain (`@ymir`, `@ymir.local`), an ssh identity
+                (`git@github.com`), or a bare host with no dot.
+  5. MACHINE  — a fleet machine named AS A HOST (plan 278): after `@`, `ssh`, `host=`/`host:` or `//`, or
+                before a port, `.local` or a tailnet suffix. The names are read at run time from the home's
+                fleet registry (`$YMIR_HOME/hodd/data/fleet.json`, `hosts`) and are NEVER in this file.
+                Judged by shape only, because a machine may share its name with a figure of the lore, and a
+                word scan cannot tell the seat from the subsystem. ADVISORY until the live tree is swept:
+                findings are counted and printed, and fail the ward only under `--strict-names` (or
+                YMIR_PUBLIC_GUARD_STRICT=1).
+
+Every run prints its scope — files judged, files exempt, words and machine names loaded (counts, never
+the names) — so a silent pass can never stand in for a judged one.
+
+Written in python because the shell version judged four classes with three chained greps and an
+allow-list of substrings, and a ward whose allow-list can be satisfied by a substring is a ward that
+passes on the thing it was meant to refuse (measured 2026-11-03: it both missed a real LAN default
+and flagged its own rule text).
+
+Usage:
+  public-guard.py --tree            # every tracked file (what CI runs)
+  public-guard.py --staged          # what is about to be committed
+  public-guard.py FILE...           # named files
+  public-guard.py --added REV FILE… # only the lines these files add since REV (the pre-push posture)
+  public-guard.py --list            # the classes and what each allows
+  … --strict-names                  # the machine class fails the ward instead of advising
+
+Exit: 0 clean · 1 findings · 2 usage.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION = "2.0.0"
+
+# ── allowed shapes, named explicitly ────────────────────────────────────────────────────────────
+# A RANGE is documentation; a HOST is a place this house stands. The distinction is the rule.
+CIDR_ALLOWED = {
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+    "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",  # RFC 5737
+    "172.20.0.0/16",                                      # Docker's default bridge pool: a published constant
+}
+DOC_NETS = ("192.0.2.", "198.51.100.", "203.0.113.", "127.0.0.1", "0.0.0.0")
+# A CLASSSIFIER'S OWN TEST needs an input on each side of the line — that is what it classifies.
+# These are the first host of each declared range and the cloud metadata address everybody's
+# allow-list names; they are not a place this house stands.
+SENTINELS = {"10.0.0.0", "172.16.0.0", "192.168.0.0", "100.64.0.1", "169.254.169.254"}
+# ALLOWED: the generic suffixes themselves (`tailnet.ts.net`, `tail.ts.net`) and the placeholder
+# shapes. REFUSED: a real tailnet id or a real seat name in front of one.
+TAILNET_ALLOWED = re.compile(
+    r"^(<host>|<seat>|<tailnet>|<machine>)?\.?(tailnet|tail)\.ts\.net$", re.I)
+# A house mailbox is allowed on a GENERIC domain only. The operator's own domains are private
+# facts (RULES/04): spelling one here would re-create the leak this ward exists to refuse.
+MAILBOX_ALLOWED_DOMAIN = re.compile(
+    r"(^|\.)(example\.(com|org|net)|example|invalid|test|localhost|ymir|ymir\.local|github\.com|githubusercontent\.com)$", re.I
+)
+SSH_IDENTITIES = {"git", "ssh", "root", "user", "ubuntu", "operator", "noreply", "no-reply", "bot"}
+EMAILS_OPT_IN = {"<the operator>", "<a personal address>", "<the operator's address>"}
+
+IPV4 = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(/\d{1,2})?\b")
+TAILNET = re.compile(r"\b([a-z0-9][a-z0-9-]*)\.(?:[a-z0-9]+\.)?ts\.net\b", re.I)
+MAILBOX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9._-]+(?:\.[A-Za-z0-9._-]+)*\.[A-Za-z]{2,}\b")
+SECRET = re.compile(
+    r"(ghp|gho|ghs|ghr)_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]+"
+    r"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+)
+SECRET_ALLOW = re.compile(r"AKIAIOSFODNN7EXAMPLE|AKIA[A-Z0-9]*EXAMPLE")
+# The guards that NAME a shape, and the rule text that quotes one, are the declaration itself.
+# GENERATED, third-party content: a lockfile repeats upstream text verbatim (a deprecation message
+# that names the package author's own address). Editing it breaks an install, and the address is
+# not this house's. Judged as an artifact, never rewritten.
+GENERATED = {"package-lock.json", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "apps/smidja-factory/apps/visualizer/package-lock.json"}
+
+GUARD_FILES = {
+    "bin/gates/guards/public-guard.sh", "bin/gates/guards/public-guard.py",
+    "bin/gates/guards/secret-guard.sh", "bin/gates/guards/hoard-guard.sh",
+    "bin/gates/guards/identity-guard.sh", "bin/gates/guards/private-guard.py",
+    # The test that proves this ward REFUSES must itself contain one planted sample of each class —
+    # it writes them into a scratch file, never into the tree. Naming it here is the same exception
+    # as the guards above, and the test is the reason the exception is safe: remove the test and the
+    # exemption goes with it.
+    "bin/gates/checks/public-data-ward.test.sh",
+}
+
+
+def is_private(octets: tuple[int, ...]) -> bool:
+    a, b, _c, _d = octets
+    return (a == 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127)
+
+
+def topology_findings(line: str) -> list[str]:
+    out: list[str] = []
+    for m in IPV4.finditer(line):
+        text = m.group(0)
+        octets = tuple(int(m.group(i)) for i in range(1, 5))
+        if not is_private(octets):
+            continue
+        if "/" in text:                                  # a RANGE: documentation, allowed if the space is
+            if text in CIDR_ALLOWED:
+                continue
+            out.append(f"a private CIDR outside the declared ranges: {text}")
+            continue
+        if line[max(0, m.start() - 7):m.start()].lower().endswith("::ffff:"):
+            continue                                     # an IPv6-mapped form in a parser's own test
+        if text.startswith(DOC_NETS) or text in SENTINELS:
+            continue
+        out.append("a private address (a place this house stands)")
+    for m in TAILNET.finditer(line):
+        if not TAILNET_ALLOWED.match(m.group(0)):
+            out.append("a tailnet host")
+    return out
+
+
+ASSET_SUFFIX = re.compile(r"^\d+x\.(png|jpe?g|svg|webp|gif)$", re.I)
+
+
+def mailbox_findings(line: str) -> list[str]:
+    out: list[str] = []
+    for m in MAILBOX.finditer(line):
+        addr = m.group(0)
+        if "\x00" in addr:
+            continue
+        if addr in EMAILS_OPT_IN or any(marker in addr for marker in ("<", ">")):
+            continue
+        local, _, domain = addr.rpartition("@")
+        tail = domain.rsplit(".", 2)[-2:] if "." in domain else []
+        if tail and ASSET_SUFFIX.match(".".join(tail)):
+            continue                                      # `Icon@2x.png` is an asset, not an address
+        if local.lower() in SSH_IDENTITIES:
+            continue
+        if "." not in domain:                            # user@host — not an internet address
+            continue
+        if MAILBOX_ALLOWED_DOMAIN.search(domain):
+            continue
+        out.append(f"a personal mailbox ({'*' * len(local)}@{domain.split('.')[-1]})")
+    return out
+
+
+# THE MASKED FORM (plan 339.1, 2026-11-20). The ward named the line; the hand then had to find the
+# address, invent a placeholder and hope the next run agreed. It now offers the mend itself:
+# `--mask <path>:<line>` rewrites ONLY the refused mailboxes on that line to the placeholder the
+# ward already allows, leaving every allowed address (example.org, noreply, git@github.com) as it
+# stood. The command names a path and a line number, never the address, so the help line is safe
+# to paste into a log or a report.
+MASKED_FORM = "<a personal address>"
+
+
+def mask_line(line: str) -> tuple[str, int]:
+    count = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal count
+        if mailbox_findings(m.group(0)):
+            count += 1
+            return MASKED_FORM
+        return m.group(0)
+
+    return MAILBOX.sub(repl, line), count
+
+
+def mask(root: Path, targets: list[str]) -> int:
+    total = 0
+    for t in targets:
+        rel, _, num = t.rpartition(":")
+        if not rel or not num.isdigit():
+            print(f"error: --mask wants <path>:<line>, got {t}", file=sys.stderr)
+            return 2
+        p = root / rel
+        if not p.is_file():
+            print(f"error: no file {rel}", file=sys.stderr)
+            return 2
+        text = p.read_text(encoding="utf-8", errors="surrogateescape")
+        lines = text.split("\n")
+        n = int(num)
+        if not 1 <= n <= len(lines):
+            print(f"error: {rel} has no line {n}", file=sys.stderr)
+            return 2
+        lines[n - 1], c = mask_line(lines[n - 1])
+        if c:
+            p.write_text("\n".join(lines), encoding="utf-8", errors="surrogateescape")
+        total += c
+        print(f'public_guard_mask[1]{{file,line,masked}}:\n  "{rel}","{n}","{c}"')
+    return 0 if total else 1
+
+
+def resolve_home(root: Path) -> str:
+    home = os.environ.get("YMIR_HOME", "")
+    if not home:
+        lib = root / "bin" / "vault" / "hoard-lib.sh"
+        if lib.exists():
+            try:
+                out = subprocess.run(["bash", "-c", f'. "{lib}"; ymir_home_root h; printf %s "$h"'],
+                                     capture_output=True, text=True, timeout=20).stdout
+                home = out.strip()
+            except Exception:
+                home = ""
+    return home
+
+
+def operator_words(root: Path) -> list[str]:
+    home = resolve_home(root)
+    if not home:
+        return []
+    listing = Path(home) / "hodd" / "security" / "operator-words.txt"
+    if not listing.is_file():
+        return []
+    return [ln.strip() for ln in listing.read_text(errors="replace").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")]
+
+
+def machine_names(root: Path) -> list[str]:
+    """The fleet's machine names, from the home's registry at run time — never shipped (RULES/04, 39)."""
+    reg = os.environ.get("YMIR_FLEET_REGISTRY", "")
+    if not reg:
+        home = resolve_home(root)
+        if not home:
+            return []
+        reg = str(Path(home) / "hodd" / "data" / "fleet.json")
+    try:
+        import json
+        hosts = json.loads(Path(reg).read_text(encoding="utf-8")).get("hosts") or {}
+    except Exception:
+        return []
+    return sorted({str(h) for h in hosts
+                   if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{2,62}", str(h))
+                   and str(h).lower() not in GENERIC_HOSTS and str(h).lower() != public_owner(root)})
+
+
+# A registry may carry a row for a name every machine has, or the repository's own public owner; neither is
+# a place this house stands, and judging them would bury the real findings (measured 2026-11-12: one generic
+# loopback name alone made most of the hits).
+GENERIC_HOSTS = {"localhost", "local", "host", "server", "phone", "android", "termux", "ubuntu", "debian",
+                 "raspberrypi", "pi", "router", "gateway", "laptop", "desktop", "workstation",
+                 "unknown", "none", "default", "self", "this"}
+
+
+def public_owner(root: Path) -> str:
+    """The repository owner in the origin URL — public by design (the licence holder), never a secret."""
+    try:
+        url = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return ""
+    m = re.search(r"github\.com[:/]([^/]+)/", url)
+    return m.group(1).lower() if m else ""
+
+
+def machine_shape(names: list[str]) -> re.Pattern | None:
+    if not names:
+        return None
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(
+        rf"(?:@|\bssh\s+(?:-\S+\s+)*|\bhost(?:name)?\s*[=:]\s*[\"']?|//)(?:{alt})\b(?![-.][a-z])"
+        rf"|\b(?:{alt})(?::\d{{2,5}}\b|\.local\b|\.[a-z0-9-]+\.ts\.net\b)", re.I)
+
+
+def scan(path: str, text: str, words: list[str], home: str, added: set[int] | None = None) -> list[str]:
+    """Judge the lines that matter. `added` is the set this RANGE adds (None: every line).
+
+    A line the branch already carried when the push started is the base tree's line, not this
+    push's: it is reported as inherited by the caller, never refused here (plan 243 §3 part D).
+    """
+    findings: list[str] = []
+    is_guard = path in GUARD_FILES
+    for n, line in enumerate(text.splitlines(), 1):
+        if added is not None and n not in added:
+            continue
+        if SECRET.search(line) and not SECRET_ALLOW.search(line) and not is_guard:
+            findings.append(f"{path}:{n}: a credential shape")
+        if not is_guard:
+            findings.extend(f"{path}:{n}: {msg}" for msg in topology_findings(line))
+            findings.extend(f"{path}:{n}: {msg}" for msg in mailbox_findings(line))
+        for w in words:
+            if re.search(rf"\b{re.escape(w)}\b", line, re.I):
+                # A NAME IS STILL A REFUSAL, and RULES/04 says why: a clone outlives any correction.
+                # What changed on 2026-11-16 is only that the finding names the remedy in the same
+                # breath, so the hand mends the sentence in one pass instead of hunting the rule.
+                findings.append(
+                    f"{path}:{n}: names the operator (RULES/04) — write the ROLE instead "
+                    f"(the operator · the client · a prospective collaborator); the word is masked here on purpose")
+                break
+    return findings
+
+
+def tracked(root: Path) -> list[str]:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, timeout=120).stdout
+    except Exception:
+        return []
+    return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
+
+
+def staged(root: Path) -> list[str]:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"],
+                             capture_output=True, timeout=60).stdout
+    except Exception:
+        return []
+    return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
+
+
+def added_lines(root: Path, base: str, rel: str) -> set[int] | None:
+    """The lines THIS RANGE adds to a file, or None when the file is new (every line is added)."""
+    try:
+        probe = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{base}:{rel}"],
+                               capture_output=True, timeout=30)
+    except Exception:
+        return None
+    if probe.returncode != 0:
+        return None                                    # not in the base: the whole file is new
+    try:
+        out = subprocess.run(["git", "-C", str(root), "diff", "-U0", "--no-color", "--no-renames",
+                              base, "--", rel], capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return None
+    lines: set[int] = set()
+    for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", out, re.M):
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        lines.update(range(start, start + count))
+    return lines
+
+
+def main(argv: list[str]) -> int:
+    # The checkout the ward judges. YMIR_GUARD_ROOT exists so a test can plant a tree and prove the
+    # ward BITES on it (the same door every other ward already answers to); production never sets it.
+    root = Path(os.environ.get("YMIR_GUARD_ROOT") or Path(__file__).resolve().parents[3])
+    words = operator_words(root)
+    home = os.environ.get("YMIR_HOME", "")
+    strict = "--strict-names" in argv or os.environ.get("YMIR_PUBLIC_GUARD_STRICT") == "1"
+    argv = [a for a in argv if a != "--strict-names"]
+    machines = machine_names(root)
+    shape = machine_shape(machines)
+
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if argv and argv[0] in ("-v", "--version"):
+        print(VERSION)
+        return 0
+    if argv and argv[0] == "--list":
+        print("public_guard[4]{class,what_is_refused,what_is_allowed}:")
+        print('  "secret","a credential shape","the documented dummy keys a test uses"')
+        print(f'  "name","a word declared in $YMIR_HOME/hodd/security/operator-words.txt","nothing — the list is the authority" ({len(words)} declared)')
+        print('  "topology","a private address, a CIDR outside the declared ranges, a tailnet host","192.168.0.0/16 · 10.0.0.0/8 · 172.16.0.0/12 · 100.64.0.0/10 · RFC 5737 space · <host>.tailnet.ts.net"')
+        print('  "mailbox","a personal address","example.com/.org/.net · .invalid · .test · git@github.com · noreply · <the operator>"')
+        print(f'  "machine","a fleet machine named as a host (@, ssh, host=, //, :port, .local, a tailnet suffix)","the same word anywhere else — a machine may share a name with the lore" ({len(machines)} read from the fleet registry; {"binding" if strict else "advisory"})')
+        return 0
+
+    if argv and argv[0] == "--mask":
+        return mask(root, argv[1:])
+
+    mode = argv[0] if argv and argv[0].startswith("--") else ""
+    added_base = ""
+    if mode == "--added":
+        added_base = argv[1] if len(argv) > 1 else ""
+        if not added_base:
+            print("error: --added needs a revision\nhelp: public-guard.py [--tree|--staged|--added REV|FILE...]", file=sys.stderr)
+            return 2
+        files = [a for a in argv[2:] if not a.startswith("-")]
+        mode = ""
+    elif mode == "--tree":
+        files = tracked(root)
+    elif mode == "--staged":
+        files = staged(root)
+    elif mode:
+        print(f"error: unknown flag {mode}\nhelp: public-guard.py [--tree|--staged|--added REV|FILE...]", file=sys.stderr)
+        return 2
+    else:
+        files = [a for a in argv if not a.startswith("-")]
+
+    if not words:
+        # A CLEAN SKIP IS A PASS; A FALSE GREEN IS NOT. Say which half was not checked.
+        print("public_guard[1]{state,detail}:")
+        print('  "names","SKIP — no $YMIR_HOME/hodd/security/operator-words.txt on this machine; the other three classes are judged"')
+
+    findings: list[str] = []
+    advisory: list[str] = []
+    judged = exempt = 0
+    inherited = 0
+    for rel in files:
+        p = root / rel
+        if not p.is_file():
+            continue
+        if rel in GENERATED or rel.rsplit("/", 1)[-1] in {"package-lock.json", "bun.lock", "pnpm-lock.yaml", "yarn.lock"}:
+            exempt += 1
+            continue                                      # generated third-party text
+        try:
+            raw = p.read_bytes()[:400_000]
+            if b"\x00" in raw[:8000]:
+                exempt += 1
+                continue                                  # a binary is not a public DOCUMENT
+            text = raw.decode("utf-8", "replace")
+        except Exception:
+            exempt += 1
+            continue
+        added = added_lines(root, added_base, rel) if added_base else None
+        judged += 1
+        findings.extend(scan(rel, text, words, home, added))
+        # SAY WHAT WAS LEFT TO THE BASE (plan 243 §3 part D): a line this range did not add is not
+        # this push's, and refusing it is how a red main punished the next branch to touch the file.
+        if added is not None and len(added) < len(text.splitlines()):
+            inherited += len(text.splitlines()) - len(added)
+        if shape is not None and rel not in GUARD_FILES:
+            for n, line in enumerate(text.splitlines(), 1):
+                if added is not None and n not in added:
+                    continue
+                if shape.search(line):
+                    advisory.append(f"{rel}:{n}: names a fleet machine as a host (RULES/39) — the name is masked here on purpose")
+    if strict:
+        findings.extend(advisory)
+        advisory = []
+
+    # THE SCOPE, ALWAYS (plan 278): a guard that prints nothing cannot be told from one that judged nothing.
+    scope_note = f"added since {added_base}" if added_base else "the whole file"
+    print(f'public_guard_scope[1]{{judged,exempt,words,machines,machine_class,lines}}:'
+          f'\n  "{judged}","{exempt}","{len(words)}","{len(machines)}","{"binding" if strict else "advisory"}","{scope_note}"')
+    if added_base and inherited:
+        print(f'public_guard_inherited[1]{{lines,verdict}}:\n  "{inherited}","carried by the base — the range did not add them, so they cannot refuse this push"')
+    if advisory:
+        files_hit = len({a.split(":", 1)[0] for a in advisory})
+        print(f'public_guard_advisory[1]{{class,lines,files}}:\n  "machine","{len(advisory)}","{files_hit}"')
+        for a in advisory[:10]:
+            print("  " + a)
+        if len(advisory) > 10:
+            print(f'  "…","{len(advisory) - 10} more — run with --strict-names to make them binding"')
+
+    if not findings:
+        print(f'public_guard[1]{{files,verdict}}:\n  "{len(files)}","PASS — templates and logic; no secret, no operator word, no topology, no mailbox"')
+        return 0
+
+    print(f'public_guard[1]{{files,findings}}:\n  "{len(files)}","{len(findings)}"')
+    for f in findings[:20]:
+        print("  " + f)
+    if len(findings) > 20:
+        print(f'  "…","{len(findings) - 20} more"')
+    mailbox_rows = [f.split(": a personal mailbox", 1)[0] for f in findings if ": a personal mailbox" in f]
+    if mailbox_rows:
+        print(f"help: a mailbox is masked in place, address unspoken — it becomes {MASKED_FORM}:", file=sys.stderr)
+        print("  python3 bin/gates/guards/public-guard.py --mask " + " ".join(sorted(set(mailbox_rows))[:20]), file=sys.stderr)
+    print("help: a private value belongs in $YMIR_HOME; a private address is allowed only as a CIDR range "
+          "or RFC 5737 space; a fixture is judged like any other file (RULES/04)", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
