@@ -1,0 +1,36 @@
+# VENDORED — Ymir's gate pack in this repository, byte for byte.
+#
+# Ymir (github.com/zerwiz/ymir) owns these files. They are seated here by Ymir's bin/gates/pack.sh, unchanged,
+# so a gate here judges exactly as it judges there. Never edit a copy: change it in Ymir, then re-seat with
+#   bin/gates/pack.sh seat <this repo>        (from a Ymir checkout)
+# `bin/gates/vendor-sync.sh --check` (CI) fails when a copy differs from Ymir at ymir_ref, and `--behind` when
+# Ymir's main has moved past it. `files:` sit at the same path in Ymir; `pack:` sit under bin/gates/pack/tree/.
+ymir_ref: 83039d8923c40cf9c0b4df7b239b9068e5989870
+files:
+  bin/gates/guards/secret-guard.sh
+  bin/gates/guards/secrets-plaintext-guard.sh
+  bin/gates/guards/public-guard.sh
+  bin/gates/guards/public-guard.py
+  bin/gates/guards/public-data-guard.sh
+  bin/gates/guards/private-guard.sh
+  bin/gates/guards/private-guard.py
+  bin/gates/guards/identity-guard.sh
+  bin/gates/guards/pr-identity-guard.sh
+  bin/gates/guards/vault-guard.sh
+  bin/gates/secret-scan.sh
+  bin/vault/hoard-lib.sh
+  bin/fleet/ymir-platform.sh
+  bin/forge/pr-patterns.sh
+  bin/forge/maker-names.py
+  bin/gates/maker-allow.txt
+  bin/gates/maker-words.txt
+pack:
+  .githooks/pre-commit
+  .githooks/pre-push
+  .github/workflows/gates.yml
+  .pi/README.md
+  RULES/00-the-gate-pack.md
+  bin/gates/install-hooks.sh
+  bin/gates/run-gates.sh
+  bin/gates/vendor-sync.sh
+  tests/gates.test.sh
